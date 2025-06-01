@@ -85,7 +85,7 @@ class Player:
 class Game:
     def __init__(self):
         self.grid = [[Cell(x, y) for x in range(GRID_WIDTH)] for y in range(GRID_HEIGHT)]
-        self.players = [Player(i, PLAYER_COLORS[i]) for i in range(2)]  # Start with 2 players
+        self.players = [Player(i, PLAYER_COLORS[i]) for i in range(4)]  # Start with 4 players
         self.game_start_time = time.time()
         self.last_army_generation = time.time()
         self.last_general_tick = time.time()
@@ -511,7 +511,7 @@ class GameRenderer:
             "REAL-TIME GAMEPLAY",
             "Click to select your territory",
             "WASD/Arrow Keys to chain moves",
-            "Can queue moves into fog of war!",
+            "Tab to switch player view",
             "Hold Shift for half army move",
             "ESC to clear selection"
         ]
