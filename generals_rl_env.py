@@ -4,6 +4,15 @@ import numpy as np
 
 
 class GeneralsEnv(gym.Env):
+    def __init__(self, player_id):
+        self.player_id = 0
+        self.game = Game()
+        self.action_space = gym.spaces.Discrete(GRID_WIDTH * GRID_HEIGHT * 4)
+        self.observation_space = gym.spaces.Box(
+            low=-2, high=1000, shape=(GRID_HEIGHT, GRID_WIDTH, 4), dtype=np.float32
+        )
+
+    
     # at the beginning, reset the environment
     def reset(self):
         self.game = Game()
@@ -17,6 +26,10 @@ class GeneralsEnv(gym.Env):
         army = self.move_army(from_x, from_y)
         # use queue_move method to try to attack or relocate the army
         success = self.game.queue_move(from_x, from_y, to_x, to_y, army, self.player_id)
+
+        if not success:
+            return self.extract_state(), -1.0, False, {"incorrect move"}
+        
         # use update method to deal with all the state change above
         self.game.update()
         # extract the new state of the game
