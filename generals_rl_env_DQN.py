@@ -64,7 +64,7 @@ class GeneralsEnv(gym.Env):
                 else:
                     # if is not visible, use fog to represent it
                     state[i][j] = [-2, 0, 0, 0]
-        return state
+        return state.flatten()
     
 
     # use an int action to represent the location and direction of one movement
