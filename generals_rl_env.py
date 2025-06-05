@@ -5,7 +5,7 @@ import numpy as np
 
 class GeneralsEnv(gym.Env):
     def __init__(self, player_id):
-        self.player_id = 0
+        self.player_id = player_id
         self.game = Game()
         self.action_space = gym.spaces.Discrete(GRID_WIDTH * GRID_HEIGHT * 4)
         self.observation_space = gym.spaces.Box(
