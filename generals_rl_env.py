@@ -53,7 +53,7 @@ class GeneralsEnv(gym.Env):
                 # get the information of the current cell
                 cell = self.game.grid[i][j]
                 # check if the cell can be visible to players
-                if cell.player_id in cell.visible_to:
+                if self.player_id in cell.visible_to:
                     state[i][j] = [
                         # get the four element of the cell
                         cell.owner if cell.owner != -1 else -1,
