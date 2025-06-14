@@ -23,6 +23,11 @@ GRID_OFFSET_Y = 50
 TURN_DURATION = 1  # Each "turn" is 0.5 seconds like the original
 ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION  # Every 25 "turns" (12.5 seconds)
 
+import os
+if os.environ.get('GENERALS_TRAINING_MODE', 'false').lower() == 'true':
+    TURN_DURATION = 0.001  # 1ms instead of 1s
+    ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION
+    
 # Colors
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
@@ -42,6 +47,7 @@ PLAYER_COLORS = [
     (255, 165, 0),    # Orange
     (128, 0, 128),    # Purple
 ]
+
 
 class CellType(Enum):
     EMPTY = 0
@@ -198,16 +204,12 @@ class Game:
         
         # Validate the move
         if from_cell.owner != player_id:
-            print(f"Move failed: Cell not owned by player {player_id}")
             return False
-        if army_count >= from_cell.army:
-            print(f"Move failed: Not enough army ({army_count} >= {from_cell.army})")
+        if army_count > from_cell.army:
             return False
         if army_count <= 0:
-            print(f"Move failed: Army count too low ({army_count})")
             return False
         if abs(to_x - from_x) + abs(to_y - from_y) != 1:  # Must be adjacent
-            print(f"Move failed: Not adjacent ({from_x},{from_y}) to ({to_x},{to_y})")
             return False
         
         # Check if destination is valid (only check what we can see)
@@ -215,7 +217,6 @@ class Game:
         
         # If we can see the destination and it's a mountain, reject the move
         if player_id in to_cell.visible_to and to_cell.type == CellType.MOUNTAIN:
-            print(f"Move failed: Target is mountain")
             return False
         
         # Add to player's move queue
@@ -226,16 +227,14 @@ class Game:
         if player_id in to_cell.visible_to:
             # We can see the destination
             if to_cell.owner == player_id:
-                print(f"Move queued: {army_count} armies from ({from_x},{from_y}) to own territory ({to_x},{to_y})")
+                return True
             elif to_cell.owner == -1 or army_count > to_cell.army:
-                print(f"Attack queued: {army_count} armies attacking ({to_x},{to_y}) with {to_cell.army} defenders")
+                return True
             else:
-                print(f"Risky attack queued: {army_count} armies vs {to_cell.army} defenders at ({to_x},{to_y})")
+                return True
         else:
             # Moving into fog of war
-            print(f"Fog move queued: {army_count} armies from ({from_x},{from_y}) into unexplored territory ({to_x},{to_y})")
-        
-        return True
+            return True
     
     def execute_move(self, move: MoveCommand):
         """Execute a single move command - handles fog of war discoveries"""
@@ -249,9 +248,9 @@ class Game:
         if from_cell.owner != move.player_id:
             print(f"Execute failed: Cell ownership changed")
             return False
-        if move.army_count >= from_cell.army:
+        if move.army_count > from_cell.army:
             # Adjust army count if it's too high now
-            move.army_count = max(1, from_cell.army - 1)
+            move.army_count = from_cell.army
             if move.army_count <= 0:
                 print(f"Execute failed: No army to move")
                 return False
