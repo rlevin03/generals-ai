@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse, random
 from typing import List, Tuple
 
-from generals_rl_env_gpu import GeneralsEnv  # <- same env your DQN uses
+from generals_rl_env_gpu import GeneralsEnv
 from generals import CellType
 
 # ── Add reduced‑action helper at run‑time ────────────────────────────
