@@ -20,13 +20,8 @@ GRID_OFFSET_X = 50
 GRID_OFFSET_Y = 50
 
 # Game timing (in seconds)
-TURN_DURATION = 1  # Each "turn" is 0.5 seconds like the original
+TURN_DURATION = 0.5  # Each "turn" is 0.5 seconds like the original
 ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION  # Every 25 "turns" (12.5 seconds)
-
-import os
-if os.environ.get('GENERALS_TRAINING_MODE', 'false').lower() == 'true':
-    TURN_DURATION = 0.001  # 1ms instead of 1s
-    ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION
     
 # Colors
 BLACK = (0, 0, 0)
