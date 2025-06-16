@@ -37,6 +37,9 @@ class GeneralsEnv(gym.Env):
         self.last_army_count = 0
         self.episode_reward = 0
         
+        # Initialize action mapping
+        self.action_mapping = {}
+        
     def reset(self):
         """Reset the environment"""
         # Create game with original Game class
@@ -170,14 +173,16 @@ class GeneralsEnv(gym.Env):
             return False
         
         # Check if we have army to move - allow moves with 1 army
-        if from_cell.army < 1:  # Changed from <= 1 to < 1
+        if from_cell.army < 1:
             return False
         
         # Check if destination is visible and is mountain
         to_cell = self.game.grid[to_y][to_x]
         if self.player_id in to_cell.visible_to and to_cell.type == CellType.MOUNTAIN:
             return False
-        
+            
+        # Allow moves to any non-mountain cell, even if we can't see it
+        # This encourages exploration and aggressive play
         return True
     
     def _simulate_opponents(self):
@@ -348,14 +353,20 @@ class GeneralsEnv(gym.Env):
     
     def step_with_reduced_action(self, action_idx):
         """Execute action using reduced action space"""
-        # Debug: Check army count before step
-        if hasattr(self, 'game') and hasattr(self.game, 'grid'):
-            general_pos = self.game.players[self.player_id].general_pos
-            if general_pos:
-                gx, gy = general_pos
-                general_cell = self.game.grid[gy][gx]
-                if general_cell.army <= 1 and self.step_count % 100 == 0:
-                    print(f"Debug: General at ({gx},{gy}) has {general_cell.army} armies")
+        # Update action mapping based on current valid moves
+        valid_sources = self.get_valid_source_cells()
+        self.action_mapping = {}
+        
+        for idx, (from_x, from_y) in enumerate(valid_sources):
+            cell = self.game.grid[from_y][from_x]
+            if cell.army >= 1:  # Only consider cells with armies
+                # Check all 4 directions
+                for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                    to_x, to_y = from_x + dx, from_y + dy
+                    if 0 <= to_x < self.grid_width and 0 <= to_y < self.grid_height:
+                        to_cell = self.game.grid[to_y][to_x]
+                        if to_cell.type != CellType.MOUNTAIN:
+                            self.action_mapping[idx] = (from_x, from_y, to_x, to_y)
         
         # Special case: if no valid actions, just wait (no-op)
         if not self.action_mapping:

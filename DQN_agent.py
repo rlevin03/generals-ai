@@ -4,8 +4,8 @@ import torch.optim as optim
 import random
 import numpy as np
 from collections import deque
-
-from generals_rl_env_DQN import GeneralsEnv
+import os
+from generals_rl_env_gpu import GeneralsEnv
 from generals import GRID_WIDTH, GRID_HEIGHT
 
 
@@ -35,17 +35,57 @@ def get_valid_actions(state_flat: np.ndarray, player_id: int):
 
 class QNetwork(nn.Module):
     def __init__(self, state_dim: int, action_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 512),
+        super(QNetwork, self).__init__()
+        # Convolutional layers
+        self.conv = nn.Sequential(
+            nn.Conv2d(6, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Linear(512, 256),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Linear(256, action_dim),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU()
         )
-
+        
+        # Fully connected layers - matching saved model exactly
+        self.fc = nn.Sequential(
+            nn.Linear(128 * 20 * 25, 512),  # Updated to match environment dimensions
+            nn.ReLU(),
+            nn.Linear(512, 256),            # fc.1
+            nn.ReLU(),
+            nn.Linear(256, 256),            # fc.2
+            nn.ReLU(),
+            nn.Linear(256, 256),            # fc.3
+            nn.ReLU(),
+            nn.Linear(256, 256)             # fc.4
+        )
+        
+        # Dueling streams
+        self.value_stream = nn.Linear(256, 1)
+        self.advantage_stream = nn.Linear(256, action_dim)
+        
     def forward(self, x: torch.Tensor):
-        return self.net(x)
+        # Reshape input if needed (from flattened to 2D)
+        if len(x.shape) == 2:  # If input is flattened
+            x = x.view(-1, 6, 20, 25)  # Updated to match environment dimensions
+        
+        # Convolutional layers
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        
+        # Fully connected layers
+        x = self.fc(x)
+        
+        # Dueling streams
+        value = self.value_stream(x)
+        advantage = self.advantage_stream(x)
+        
+        # Combine value and advantage streams
+        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
+        
+        return q_values
 
 
 class ReplayBuffer:
