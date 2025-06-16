@@ -186,6 +186,13 @@ def play_game(model_path, render=True, num_opponents=1, games=1, delay=0.5):
                         elif event.key == pygame.K_ESCAPE:
                             pygame.quit()
                             return
+                        elif event.key == pygame.K_TAB:
+                            # Switch player view (for local multiplayer)
+                            alive_players = [p.id for p in env.game.players if p.is_alive]
+                            if len(alive_players) > 1:
+                                current_idx = alive_players.index(env.game.current_player)
+                                env.game.current_player = alive_players[(current_idx + 1) % len(alive_players)]
+                                print(f"Switched to Player {env.game.current_player + 1}'s view")
             
             # Get valid actions
             valid_actions = env.get_valid_actions()
@@ -213,7 +220,8 @@ def play_game(model_path, render=True, num_opponents=1, games=1, delay=0.5):
                     "",
                     "Controls:",
                     "SPACE - Toggle speed",
-                    "ESC - Quit"
+                    "ESC - Quit",
+                    "TAB - Switch player view"
                 ]
                 
                 y_offset = 10
