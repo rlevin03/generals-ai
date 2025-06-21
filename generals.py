@@ -1,16 +1,29 @@
+"""
+Generals.io - Real Time Strategy Game
+
+A Python implementation of the popular Generals.io game using Pygame.
+Features real-time gameplay, fog of war, multiple players, and strategic combat.
+
+Most of this code is AI generated.
+
+"""
+
 import pygame
 import random
-import math
 import time
-from enum import Enum
-from typing import List, Tuple, Optional, Dict, Deque
-from collections import deque
 import sys
+from enum import Enum
+from typing import List, Tuple
+from collections import deque
 
 # Initialize Pygame
 pygame.init()
 
-# Constants
+# =============================================================================
+# GAME CONSTANTS
+# =============================================================================
+
+# Display settings
 WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 800
 GRID_WIDTH = 25
@@ -22,7 +35,7 @@ GRID_OFFSET_Y = 50
 # Game timing (in seconds)
 TURN_DURATION = 0.5  # Each "turn" is 0.5 seconds like the original
 ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION  # Every 25 "turns" (12.5 seconds)
-    
+
 # Colors
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
@@ -31,7 +44,7 @@ DARK_GRAY = (64, 64, 64)
 LIGHT_GRAY = (192, 192, 192)
 FOG_COLOR = (40, 40, 40)
 
-# Player colors
+# Player colors (8 different colors for up to 8 players)
 PLAYER_COLORS = [
     (255, 100, 100),  # Red
     (100, 100, 255),  # Blue
@@ -43,22 +56,51 @@ PLAYER_COLORS = [
     (128, 0, 128),    # Purple
 ]
 
+# =============================================================================
+# GAME ENUMS AND CLASSES
+# =============================================================================
 
 class CellType(Enum):
+    """Enumeration of different cell types on the game board."""
     EMPTY = 0
     MOUNTAIN = 1
     CITY = 2
     GENERAL = 3
 
+
 class MoveCommand:
-    def __init__(self, from_pos: Tuple[int, int], to_pos: Tuple[int, int], army_count: int, player_id: int):
+    """
+    Represents a move command from one cell to another.
+    
+    Attributes:
+        from_pos: Starting position (x, y)
+        to_pos: Destination position (x, y)
+        army_count: Number of armies to move
+        player_id: ID of the player making the move
+        timestamp: When the move was queued
+    """
+    
+    def __init__(self, from_pos: Tuple[int, int], to_pos: Tuple[int, int], 
+                 army_count: int, player_id: int):
         self.from_pos = from_pos
         self.to_pos = to_pos
         self.army_count = army_count
         self.player_id = player_id
         self.timestamp = time.time()
 
+
 class Cell:
+    """
+    Represents a single cell on the game board.
+    
+    Attributes:
+        x, y: Grid coordinates
+        type: Type of cell (empty, mountain, city, general)
+        owner: Player ID who owns this cell (-1 for neutral)
+        army: Number of armies in this cell
+        visible_to: Set of player IDs who can see this cell
+    """
+    
     def __init__(self, x: int, y: int, cell_type: CellType = CellType.EMPTY):
         self.x = x
         self.y = y
@@ -73,7 +115,21 @@ class Cell:
         elif cell_type == CellType.GENERAL:
             self.army = 1
 
+
 class Player:
+    """
+    Represents a player in the game.
+    
+    Attributes:
+        id: Unique player identifier
+        color: Player's color for display
+        general_pos: Position of player's general
+        is_alive: Whether the player is still in the game
+        total_army: Total armies across all territories
+        total_land: Total number of owned cells
+        move_queue: Queue of pending move commands
+    """
+    
     def __init__(self, player_id: int, color: Tuple[int, int, int]):
         self.id = player_id
         self.color = color
@@ -83,8 +139,21 @@ class Player:
         self.total_land = 0
         self.move_queue = deque()  # Queue for move commands
 
+
 class Game:
+    """
+    Main game controller class that manages the game state and logic.
+    
+    This class handles:
+    - Game board initialization and map generation
+    - Player management and turn processing
+    - Move validation and execution
+    - Army generation and territory control
+    - Fog of war and visibility updates
+    """
+    
     def __init__(self):
+        """Initialize a new game with default settings."""
         self.grid = [[Cell(x, y) for x in range(GRID_WIDTH)] for y in range(GRID_HEIGHT)]
         self.players = [Player(i, PLAYER_COLORS[i]) for i in range(4)]  # Start with 4 players
         self.game_start_time = time.time()
@@ -95,14 +164,19 @@ class Game:
         self.game_over = False
         self.winner = -1
         
-        # Generate map
-        self.generate_map()
-        self.place_generals()
-        self.update_visibility()
+        # Initialize the game
+        self._generate_map()
+        self._place_generals()
+        self._update_visibility()
+    
+    def _generate_map(self) -> None:
+        """
+        Generate the initial game map with mountains and cities.
         
-    def generate_map(self):
-        """Generate mountains and cities on the map"""
-        # Add some mountains (impassable terrain)
+        Creates a random distribution of impassable mountains and
+        cities with initial army counts.
+        """
+        # Add mountains (impassable terrain)
         num_mountains = random.randint(15, 25)
         for _ in range(num_mountains):
             x = random.randint(0, GRID_WIDTH - 1)
@@ -110,7 +184,7 @@ class Game:
             if self.grid[y][x].type == CellType.EMPTY:
                 self.grid[y][x].type = CellType.MOUNTAIN
         
-        # Add cities
+        # Add cities with initial armies
         num_cities = random.randint(8, 12)
         for _ in range(num_cities):
             x = random.randint(0, GRID_WIDTH - 1)
@@ -119,8 +193,13 @@ class Game:
                 self.grid[y][x].type = CellType.CITY
                 self.grid[y][x].army = random.randint(40, 50)
     
-    def place_generals(self):
-        """Place generals for each player ensuring minimum distance"""
+    def _place_generals(self) -> None:
+        """
+        Place generals for each player ensuring minimum distance between them.
+        
+        Generals are placed with a minimum Manhattan distance to prevent
+        immediate conflicts and ensure fair starting positions.
+        """
         positions = []
         min_distance = 15  # Minimum Manhattan distance between generals
         
@@ -154,7 +233,16 @@ class Game:
                 attempts += 1
     
     def get_neighbors(self, x: int, y: int, include_diagonals: bool = False) -> List[Tuple[int, int]]:
-        """Get valid neighboring coordinates"""
+        """
+        Get valid neighboring coordinates for a given position.
+        
+        Args:
+            x, y: Grid coordinates
+            include_diagonals: Whether to include diagonal neighbors
+            
+        Returns:
+            List of valid neighboring coordinates
+        """
         neighbors = []
         # Cardinal directions (up, down, left, right)
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
@@ -171,14 +259,19 @@ class Game:
         
         return neighbors
     
-    def update_visibility(self):
-        """Update fog of war based on owned territories"""
+    def _update_visibility(self) -> None:
+        """
+        Update fog of war based on owned territories.
+        
+        Players can see their own territories and all adjacent cells
+        (including diagonals). This creates the fog of war effect.
+        """
         # Clear all visibility
         for row in self.grid:
             for cell in row:
                 cell.visible_to.clear()
         
-        # Add visibility for each player's territories and adjacent cells (including diagonals)
+        # Add visibility for each player's territories and adjacent cells
         for y in range(GRID_HEIGHT):
             for x in range(GRID_WIDTH):
                 cell = self.grid[y][x]
@@ -190,8 +283,20 @@ class Game:
                     for nx, ny in self.get_neighbors(x, y, include_diagonals=True):
                         self.grid[ny][nx].visible_to.add(cell.owner)
     
-    def queue_move(self, from_x: int, from_y: int, to_x: int, to_y: int, army_count: int, player_id: int):
-        """Queue a move command - now allows moves into fog of war"""
+    def queue_move(self, from_x: int, from_y: int, to_x: int, to_y: int, 
+                  army_count: int, player_id: int) -> bool:
+        """
+        Queue a move command for execution.
+        
+        Args:
+            from_x, from_y: Starting position
+            to_x, to_y: Destination position
+            army_count: Number of armies to move
+            player_id: ID of the player making the move
+            
+        Returns:
+            True if move was successfully queued, False otherwise
+        """
         if self.game_over:
             return False
             
@@ -218,21 +323,18 @@ class Game:
         move = MoveCommand((from_x, from_y), (to_x, to_y), army_count, player_id)
         self.players[player_id].move_queue.append(move)
         
-        # Provide feedback based on what we can see
-        if player_id in to_cell.visible_to:
-            # We can see the destination
-            if to_cell.owner == player_id:
-                return True
-            elif to_cell.owner == -1 or army_count > to_cell.army:
-                return True
-            else:
-                return True
-        else:
-            # Moving into fog of war
-            return True
+        return True
     
-    def execute_move(self, move: MoveCommand):
-        """Execute a single move command - handles fog of war discoveries"""
+    def execute_move(self, move: MoveCommand) -> bool:
+        """
+        Execute a single move command and handle resulting battles.
+        
+        Args:
+            move: The move command to execute
+            
+        Returns:
+            True if move was executed successfully, False otherwise
+        """
         from_x, from_y = move.from_pos
         to_x, to_y = move.to_pos
         
@@ -264,7 +366,6 @@ class Game:
             from_cell.army -= move.army_count
             print(f"Moved to own territory: {to_cell.army} armies now at destination")
         else:
-            # Battle!
             attacking_army = move.army_count
             defending_army = to_cell.army
             
@@ -286,7 +387,7 @@ class Game:
                 # Check if we captured a general
                 if to_cell.type == CellType.GENERAL:
                     print(f"GENERAL CAPTURED! Player {old_owner} defeated by Player {from_cell.owner}")
-                    self.capture_general(old_owner, from_cell.owner)
+                    self._capture_general(old_owner, from_cell.owner)
             else:
                 # Attack fails
                 to_cell.army -= attacking_army
@@ -295,8 +396,14 @@ class Game:
         
         return True
     
-    def capture_general(self, captured_player: int, capturing_player: int):
-        """Handle general capture - transfer all armies and territory"""
+    def _capture_general(self, captured_player: int, capturing_player: int) -> None:
+        """
+        Handle general capture by transferring all armies and territory.
+        
+        Args:
+            captured_player: ID of the player whose general was captured
+            capturing_player: ID of the player who captured the general
+        """
         if captured_player < 0 or captured_player >= len(self.players):
             return
         
@@ -315,8 +422,16 @@ class Game:
             self.game_over = True
             self.winner = alive_players[0].id
     
-    def update(self):
-        """Real-time game update"""
+    def update(self) -> None:
+        """
+        Update the game state in real-time.
+        
+        This method handles:
+        - Processing move queues every turn
+        - Army generation from generals and cities
+        - Periodic army generation for all territories
+        - Visibility updates
+        """
         current_time = time.time()
         
         # Process move queues for all players every TURN_DURATION
@@ -340,22 +455,22 @@ class Game:
                         elif cell.type == CellType.CITY:
                             cell.army += 1
             
-            self.update_visibility()
+            self._update_visibility()
         
         # Generate armies for all territories every 25 turns (12.5 seconds)
         if current_time - self.last_army_generation >= ARMY_GENERATION_INTERVAL:
             self.last_army_generation = current_time
-            self.generate_armies()
+            self._generate_armies()
     
-    def generate_armies(self):
-        """Generate 1 army for each owned territory every 25 turns"""
+    def _generate_armies(self) -> None:
+        """Generate 1 army for each owned territory every 25 turns."""
         for row in self.grid:
             for cell in row:
                 if cell.owner >= 0 and cell.type not in [CellType.MOUNTAIN]:
                     cell.army += 1
     
-    def update_player_stats(self):
-        """Update player statistics"""
+    def update_player_stats(self) -> None:
+        """Update player statistics (total army and land counts)."""
         for player in self.players:
             player.total_army = 0
             player.total_land = 0
@@ -366,21 +481,41 @@ class Game:
                         player.total_army += cell.army
                         player.total_land += 1
     
-    def get_game_time(self):
-        """Get elapsed game time in seconds"""
+    def get_game_time(self) -> float:
+        """Get elapsed game time in seconds."""
         return time.time() - self.game_start_time
     
-    def get_turn_number(self):
-        """Get current turn number (for display)"""
+    def get_turn_number(self) -> int:
+        """Get current turn number (for display)."""
         return int(self.get_game_time() / TURN_DURATION)
 
+
 class GameRenderer:
-    def __init__(self, screen):
+    """
+    Handles all rendering and display logic for the game.
+    
+    This class is responsible for drawing the game board, UI elements,
+    and handling the visual representation of the game state.
+    """
+    
+    def __init__(self, screen: pygame.Surface):
+        """
+        Initialize the renderer with the game screen.
+        
+        Args:
+            screen: Pygame surface to render to
+        """
         self.screen = screen
         self.font = pygame.font.Font(None, 20)
         self.small_font = pygame.font.Font(None, 16)
     
-    def render(self, game: Game):
+    def render(self, game: Game) -> None:
+        """
+        Render the complete game state to the screen.
+        
+        Args:
+            game: The game instance to render
+        """
         self.screen.fill(BLACK)
         
         # Render grid
@@ -426,24 +561,9 @@ class GameRenderer:
                     
                     # Draw special markers
                     if cell.type == CellType.GENERAL:
-                        # Draw crown symbol for general
-                        pygame.draw.polygon(self.screen, WHITE, [
-                            (center_x - 8, center_y - 8),
-                            (center_x - 4, center_y - 12),
-                            (center_x, center_y - 8),
-                            (center_x + 4, center_y - 12),
-                            (center_x + 8, center_y - 8),
-                            (center_x + 6, center_y + 8),
-                            (center_x - 6, center_y + 8)
-                        ])
+                        self._draw_general_marker(center_x, center_y)
                     elif cell.type == CellType.CITY:
-                        # Draw building symbol for city
-                        pygame.draw.rect(self.screen, WHITE, 
-                                       (center_x - 6, center_y - 8, 4, 8))
-                        pygame.draw.rect(self.screen, WHITE, 
-                                       (center_x - 1, center_y - 10, 4, 10))
-                        pygame.draw.rect(self.screen, WHITE, 
-                                       (center_x + 4, center_y - 6, 4, 6))
+                        self._draw_city_marker(center_x, center_y)
                     
                     # Draw army count
                     if cell.army > 0:
@@ -457,10 +577,36 @@ class GameRenderer:
                     pygame.draw.rect(self.screen, WHITE, rect, 3)
         
         # Draw UI
-        self.draw_ui(game)
+        self._draw_ui(game)
     
-    def draw_ui(self, game: Game):
-        """Draw game UI"""
+    def _draw_general_marker(self, center_x: int, center_y: int) -> None:
+        """Draw a crown symbol for the general."""
+        pygame.draw.polygon(self.screen, WHITE, [
+            (center_x - 8, center_y - 8),
+            (center_x - 4, center_y - 12),
+            (center_x, center_y - 8),
+            (center_x + 4, center_y - 12),
+            (center_x + 8, center_y - 8),
+            (center_x + 6, center_y + 8),
+            (center_x - 6, center_y + 8)
+        ])
+    
+    def _draw_city_marker(self, center_x: int, center_y: int) -> None:
+        """Draw a building symbol for the city."""
+        pygame.draw.rect(self.screen, WHITE, 
+                       (center_x - 6, center_y - 8, 4, 8))
+        pygame.draw.rect(self.screen, WHITE, 
+                       (center_x - 1, center_y - 10, 4, 10))
+        pygame.draw.rect(self.screen, WHITE, 
+                       (center_x + 4, center_y - 6, 4, 6))
+    
+    def _draw_ui(self, game: Game) -> None:
+        """
+        Draw the game UI including player info, game time, and instructions.
+        
+        Args:
+            game: The game instance to draw UI for
+        """
         # Update player stats
         game.update_player_stats()
         
@@ -517,22 +663,33 @@ class GameRenderer:
         
         # Game over screen
         if game.game_over:
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
-            overlay.set_alpha(128)
-            overlay.fill(BLACK)
-            self.screen.blit(overlay, (0, 0))
-            
-            winner_text = f"Player {game.winner + 1} Wins!"
-            text_surface = pygame.font.Font(None, 48).render(winner_text, True, PLAYER_COLORS[game.winner])
-            text_rect = text_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
-            self.screen.blit(text_surface, text_rect)
-            
-            restart_text = "Press R to restart"
-            text_surface = self.font.render(restart_text, True, WHITE)
-            text_rect = text_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 50))
-            self.screen.blit(text_surface, text_rect)
+            self._draw_game_over_screen(game)
+    
+    def _draw_game_over_screen(self, game: Game) -> None:
+        """Draw the game over screen with winner announcement."""
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+        
+        winner_text = f"Player {game.winner + 1} Wins!"
+        text_surface = pygame.font.Font(None, 48).render(winner_text, True, PLAYER_COLORS[game.winner])
+        text_rect = text_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
+        self.screen.blit(text_surface, text_rect)
+        
+        restart_text = "Press R to restart"
+        text_surface = self.font.render(restart_text, True, WHITE)
+        text_rect = text_surface.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 50))
+        self.screen.blit(text_surface, text_rect)
+
 
 def main():
+    """
+    Main game loop and entry point.
+    
+    Initializes the game, handles user input, and runs the main game loop
+    until the user quits or closes the window.
+    """
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
     pygame.display.set_caption("Generals.io - Real Time Strategy")
     clock = pygame.time.Clock()
@@ -547,100 +704,10 @@ def main():
                 running = False
             
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r and game.game_over:
-                    game = Game()
-                elif event.key == pygame.K_TAB:
-                    # Switch player view (for local multiplayer)
-                    alive_players = [p.id for p in game.players if p.is_alive]
-                    if len(alive_players) > 1:
-                        current_idx = alive_players.index(game.current_player)
-                        game.current_player = alive_players[(current_idx + 1) % len(alive_players)]
-                
-                elif event.key == pygame.K_ESCAPE:
-                    # Clear selection
-                    game.selected_cell = None
-                    print("Selection cleared")
-                
-                # WASD movement
-                elif not game.game_over and game.selected_cell:
-                    from_x, from_y = game.selected_cell
-                    to_x, to_y = from_x, from_y
-                    
-                    if event.key == pygame.K_w or event.key == pygame.K_UP:
-                        to_y = from_y - 1
-                    elif event.key == pygame.K_s or event.key == pygame.K_DOWN:
-                        to_y = from_y + 1
-                    elif event.key == pygame.K_a or event.key == pygame.K_LEFT:
-                        to_x = from_x - 1
-                    elif event.key == pygame.K_d or event.key == pygame.K_RIGHT:
-                        to_x = from_x + 1
-                    
-                    # Execute the move if valid
-                    if (to_x, to_y) != (from_x, from_y) and 0 <= to_x < GRID_WIDTH and 0 <= to_y < GRID_HEIGHT:
-                        from_cell = game.grid[from_y][from_x]
-                        current_player = game.current_player
-                        
-                        print(f"Attempting WASD move from ({from_x},{from_y}) to ({to_x},{to_y})")
-                        
-                        # Determine army count to move
-                        keys = pygame.key.get_pressed()
-                        if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
-                            army_count = from_cell.army // 2
-                        else:
-                            army_count = from_cell.army - 1
-                        
-                        print(f"Army count to move: {army_count} (from {from_cell.army} total)")
-                        
-                        if army_count > 0:
-                            success = game.queue_move(from_x, from_y, to_x, to_y, 
-                                                    army_count, current_player)
-                            if success:
-                                # Always auto-select the destination cell for chaining moves
-                                # This allows continuous movement without reselecting
-                                game.selected_cell = (to_x, to_y)
-                                print(f"Auto-selected destination ({to_x},{to_y}) for chaining")
-                        else:
-                            print(f"Cannot move: army count too low")
+                _handle_keydown_event(event, game)
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if game.game_over:
-                    continue
-                    
-                # Convert mouse position to grid coordinates
-                mouse_x, mouse_y = event.pos
-                grid_x = (mouse_x - GRID_OFFSET_X) // CELL_SIZE
-                grid_y = (mouse_y - GRID_OFFSET_Y) // CELL_SIZE
-                
-                if 0 <= grid_x < GRID_WIDTH and 0 <= grid_y < GRID_HEIGHT:
-                    current_player = game.current_player
-                    
-                    if event.button == 1:  # Left click - select
-                        cell = game.grid[grid_y][grid_x]
-                        if cell.owner == current_player and cell.army > 1:
-                            game.selected_cell = (grid_x, grid_y)
-                            print(f"Selected cell ({grid_x},{grid_y}) with {cell.army} armies")
-                        else:
-                            print(f"Cannot select: Owner={cell.owner}, Army={cell.army}, Player={current_player}")
-                    
-                    elif event.button == 3:  # Right click - queue move (fallback)
-                        if game.selected_cell:
-                            from_x, from_y = game.selected_cell
-                            from_cell = game.grid[from_y][from_x]
-                            
-                            # Check if it's a valid adjacent move
-                            if abs(grid_x - from_x) + abs(grid_y - from_y) == 1:
-                                # Determine army count to move
-                                keys = pygame.key.get_pressed()
-                                if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
-                                    army_count = from_cell.army // 2
-                                else:
-                                    army_count = from_cell.army - 1
-                                
-                                if army_count > 0:
-                                    success = game.queue_move(from_x, from_y, grid_x, grid_y, 
-                                                            army_count, current_player)
-                                    if success:
-                                        game.selected_cell = None
+                _handle_mouse_event(event, game)
         
         # Real-time game update
         game.update()
@@ -651,6 +718,130 @@ def main():
     
     pygame.quit()
     sys.exit()
+
+
+def _handle_keydown_event(event: pygame.event.Event, game: Game) -> None:
+    """
+    Handle keyboard input events.
+    
+    Args:
+        event: The pygame keydown event
+        game: The game instance to update
+    """
+    if event.key == pygame.K_r and game.game_over:
+        # Restart game
+        game = Game()
+    elif event.key == pygame.K_TAB:
+        # Switch player view (for local multiplayer)
+        alive_players = [p.id for p in game.players if p.is_alive]
+        if len(alive_players) > 1:
+            current_idx = alive_players.index(game.current_player)
+            game.current_player = alive_players[(current_idx + 1) % len(alive_players)]
+    
+    elif event.key == pygame.K_ESCAPE:
+        # Clear selection
+        game.selected_cell = None
+        print("Selection cleared")
+    
+    # WASD movement
+    elif not game.game_over and game.selected_cell:
+        _handle_wasd_movement(event, game)
+
+
+def _handle_wasd_movement(event: pygame.event.Event, game: Game) -> None:
+    """
+    Handle WASD/arrow key movement commands.
+    
+    Args:
+        event: The pygame keydown event
+        game: The game instance to update
+    """
+    from_x, from_y = game.selected_cell
+    to_x, to_y = from_x, from_y
+    
+    if event.key == pygame.K_w or event.key == pygame.K_UP:
+        to_y = from_y - 1
+    elif event.key == pygame.K_s or event.key == pygame.K_DOWN:
+        to_y = from_y + 1
+    elif event.key == pygame.K_a or event.key == pygame.K_LEFT:
+        to_x = from_x - 1
+    elif event.key == pygame.K_d or event.key == pygame.K_RIGHT:
+        to_x = from_x + 1
+    
+    # Execute the move if valid
+    if (to_x, to_y) != (from_x, from_y) and 0 <= to_x < GRID_WIDTH and 0 <= to_y < GRID_HEIGHT:
+        from_cell = game.grid[from_y][from_x]
+        current_player = game.current_player
+        
+        print(f"Attempting WASD move from ({from_x},{from_y}) to ({to_x},{to_y})")
+        
+        # Determine army count to move
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
+            army_count = from_cell.army // 2
+        else:
+            army_count = from_cell.army - 1
+        
+        print(f"Army count to move: {army_count} (from {from_cell.army} total)")
+        
+        if army_count > 0:
+            success = game.queue_move(from_x, from_y, to_x, to_y, 
+                                    army_count, current_player)
+            if success:
+                # Always auto-select the destination cell for chaining moves
+                game.selected_cell = (to_x, to_y)
+                print(f"Auto-selected destination ({to_x},{to_y}) for chaining")
+        else:
+            print(f"Cannot move: army count too low")
+
+
+def _handle_mouse_event(event: pygame.event.Event, game: Game) -> None:
+    """
+    Handle mouse click events.
+    
+    Args:
+        event: The pygame mouse event
+        game: The game instance to update
+    """
+    if game.game_over:
+        return
+        
+    # Convert mouse position to grid coordinates
+    mouse_x, mouse_y = event.pos
+    grid_x = (mouse_x - GRID_OFFSET_X) // CELL_SIZE
+    grid_y = (mouse_y - GRID_OFFSET_Y) // CELL_SIZE
+    
+    if 0 <= grid_x < GRID_WIDTH and 0 <= grid_y < GRID_HEIGHT:
+        current_player = game.current_player
+        
+        if event.button == 1:  # Left click - select
+            cell = game.grid[grid_y][grid_x]
+            if cell.owner == current_player and cell.army > 1:
+                game.selected_cell = (grid_x, grid_y)
+                print(f"Selected cell ({grid_x},{grid_y}) with {cell.army} armies")
+            else:
+                print(f"Cannot select: Owner={cell.owner}, Army={cell.army}, Player={current_player}")
+        
+        elif event.button == 3:  # Right click - queue move (fallback)
+            if game.selected_cell:
+                from_x, from_y = game.selected_cell
+                from_cell = game.grid[from_y][from_x]
+                
+                # Check if it's a valid adjacent move
+                if abs(grid_x - from_x) + abs(grid_y - from_y) == 1:
+                    # Determine army count to move
+                    keys = pygame.key.get_pressed()
+                    if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
+                        army_count = from_cell.army // 2
+                    else:
+                        army_count = from_cell.army - 1
+                    
+                    if army_count > 0:
+                        success = game.queue_move(from_x, from_y, grid_x, grid_y, 
+                                                army_count, current_player)
+                        if success:
+                            game.selected_cell = None
+
 
 if __name__ == "__main__":
     main()
