@@ -25,14 +25,7 @@ Generals.io is a real-time strategy game where players compete to capture territ
 
 ## 📸 Screenshots & Visualizations
 
-_[Add screenshots of the game interface, training curves, and AI gameplay here]_
-
-### Suggested Images to Add:
-
-- Game board with multiple players and fog of war
-- Training progress curves showing win rates and rewards
-- AI agent gameplay demonstrations
-- Tournament results and statistics
+![Game Screenshot](assets/generals_screenshot.png)
 
 ## 🚀 Quick Start
 
@@ -71,15 +64,15 @@ python gpu_dqn_training.py
 python gpu_dqn_training.py --episodes 5000 --batch-size 256 --lr 0.0005
 ```
 
-### 2. REINFORCE Agent Training
+### 2. DQN Agent Training against Greedy
 
 ```bash
-# Train REINFORCE agent against a frozen DQN opponent
-python train_reinforce_vs_greedy.py --model_path checkpoints/dqn_model.pth
+# Train DQN agent against a greedy algorithm
+python train_reinforce_vs_greedy.py --model_path checkpoints/latest_checkpoint.pth
 
 # Custom training parameters
 python train_reinforce_vs_greedy.py \
-    --model_path checkpoints/dqn_model.pth \
+    --model_path checkpoints/latest_checkpoint.pth \
     --episodes 3000 \
     --lr 0.001 \
     --gamma 0.99
@@ -87,29 +80,25 @@ python train_reinforce_vs_greedy.py \
 
 ### 3. Tournament Evaluation
 
-```bash
+````bash
 # Run tournament between DQN and Greedy agents
-python greedy_vs_dqn.py --model checkpoints/dqn_model.pth --games 100
-
-# Run with custom number of games
-python greedy_vs_dqn.py --model checkpoints/dqn_model.pth --games 500
-```
+python greedy_vs_dqn.py --model checkpoints/latest_checkpoint.pth --games 100
 
 ### 4. AI Agent Demo
 
 ```bash
 # Play against AI with visualization
-python generals_rl_demo.py checkpoints/model.pth
+python generals_rl_demo.py checkpoints/latest_checkpoint.pth
 
 # Play without rendering (faster)
-python generals_rl_demo.py checkpoints/model.pth --no-render
+python generals_rl_demo.py checkpoints/latest_checkpoint.pth --no-render
 
 # Play multiple games
-python generals_rl_demo.py checkpoints/model.pth --games 5
+python generals_rl_demo.py checkpoints/latest_checkpoint.pth --games 5
 
 # Analyze agent performance
-python generals_rl_demo.py checkpoints/model.pth --analyze --games 20
-```
+python generals_rl_demo.py checkpoints/latest_checkpoint.pth --analyze --games 20
+````
 
 ### 5. Greedy Baseline Agent
 
@@ -157,7 +146,7 @@ buffer_capacity = 200000    # Replay buffer size
 update_target_every = 1000  # Target network update frequency
 ```
 
-### REINFORCE Constants (`train_reinforce_vs_greedy.py`)
+### DQN Constants (`train_reinforce_vs_greedy.py`)
 
 ```python
 # Reward shaping constants
@@ -195,6 +184,12 @@ Training progress is automatically logged and visualized:
 - **Model checkpoints**: `checkpoints/` directory
 - **Tournament results**: CSV files with timestamps
 
+### Model File Naming
+
+- **DQN Training**: Creates `checkpoints/checkpoint_ep{episode}.pth` and `checkpoints/latest_checkpoint.pth`
+- **PPO Training**: Creates `runs/policy_ep{episode:05d}.pth` and `runs/final_model.pth`
+- **Demo Script**: Automatically finds `.pth` files in `checkpoints/` directory
+
 ### Monitoring Training
 
 ```bash
@@ -218,22 +213,33 @@ cat training_stats/training_summary.json
 
 ```
 generals-ai/
-├── generals.py                    # Main game implementation
-├── generals_rl_env_gpu.py         # RL environment wrapper
-├── gpu_dqn_training.py           # DQN training script
-├── train_reinforce_vs_greedy.py  # REINFORCE training script
-├── greedy_vs_dqn.py              # Tournament evaluation
-├── generals_rl_demo.py           # AI agent demo
-├── greedy_baseline_agent.py      # Greedy baseline agent
-├── policy_network.py             # Policy network for REINFORCE
-├── DQN_agent.py                  # DQN agent implementation
-├── checkpoints/                  # Saved model checkpoints
-├── runs/                         # TensorBoard logs
-├── training_stats/               # Training statistics and plots
+├── generals.py
+├── generals_rl_env_gpu.py
+├── gpu_dqn_training.py
+├── train_reinforce_vs_greedy.py
+├── greedy_vs_dqn.py
+├── generals_rl_demo.py
+├── greedy_baseline_agent.py
+├── policy_network.py
+├── DQN_agent.py
+├── assets/
+│   ├── generals_screenshot.png
+│   └── statistics_dqn.png
+├── checkpoints/
+│   ├── checkpoint_ep{episode}.pth
+│   └── latest_checkpoint.pth
+├── runs/
+│   ├── generals_optimized_{timestamp}/
+│   ├── policy_ep{episode:05d}.pth
+│   └── final_model.pth
+├── training_stats/
 │   ├── episode_stats.csv
-│   ├── training_curves.png  # Distribution of action types
-│   └── training_stats.csv        # Reward progression during training
-└── README.md                     # This file
+│   ├── training_stats.csv
+│   ├── evaluation_stats.csv
+│   ├── training_curves.png
+│   └── training_summary.json
+├── tournament_results_{timestamp}.csv
+└── README.md
 ```
 
 ### Network Architecture
@@ -251,14 +257,6 @@ The agents use convolutional neural networks with:
 - **Reduced action space**: Only valid moves (dynamically sized)
 - **Movement**: 4 directions (up, down, left, right)
 
-## 🎯 Tips for Training
-
-1. **Start Simple**: Begin with 1 opponent before scaling to multiple opponents
-2. **Monitor Progress**: Use TensorBoard to track training metrics
-3. **Save Checkpoints**: Regular checkpointing prevents loss of progress
-4. **Experiment**: Try different reward functions and hyperparameters
-5. **Evaluate**: Run tournaments to compare agent performance
-
 ## 🐛 Troubleshooting
 
 ### Common Issues
@@ -270,14 +268,8 @@ The agents use convolutional neural networks with:
 
 ## 📈 Results & Benchmarks
 
-_[Add your license information here]_
+![Statistics](assets/statistics_dqn.png)
 
 ## 🙏 Acknowledgments
 
-- Original Generals.io game concept
-- PyTorch and Gym frameworks
-- Reinforcement learning community
-
----
-
-**Note**: This project is primarily AI-generated and serves as a demonstration of reinforcement learning techniques applied to strategy games.
+- Original Generals.io game concept(My implementation is a rough copy)
