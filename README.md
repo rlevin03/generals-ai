@@ -261,8 +261,8 @@ The agents use convolutional neural networks with:
 
 ### Common Issues
 
-- **CUDA out of memory**: Reduce batch size or number of parallel environments
-- **Slow training**: Increase number of parallel environments or use GPU
+- **If CUDA out of memory**: Reduce batch size or number of parallel environments
+- **Slow training**: Increase number of parallel environments or use Google Collab
 - **Poor performance**: Adjust reward constants or training hyperparameters
 - **Invalid moves**: Check action space configuration and environment setup
 
