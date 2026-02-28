@@ -10,7 +10,7 @@ Most of this code is AI generated.
 
 """
 
-from generals import Game, GRID_WIDTH, GRID_HEIGHT, CellType
+from game import Game, GRID_WIDTH, GRID_HEIGHT, CellType
 import gym
 import numpy as np
 import random

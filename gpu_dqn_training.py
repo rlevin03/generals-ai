@@ -26,8 +26,8 @@ from collections import deque, defaultdict
 import random
 import time
 from torch.utils.tensorboard import SummaryWriter
-from generals_rl_env_gpu import GeneralsEnv
-from generals import CellType
+from environment import GeneralsEnv
+from game import CellType
 import multiprocessing as mp
 from torch.nn.parallel import DataParallel
 import os

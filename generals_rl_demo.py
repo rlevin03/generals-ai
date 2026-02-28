@@ -17,8 +17,8 @@ import time
 import os
 import argparse
 from typing import Optional, Tuple
-from generals import GameRenderer
-from generals_rl_env_gpu import GeneralsEnv
+from game import GameRenderer
+from environment import GeneralsEnv
 
 
 class ConvDQN(nn.Module):

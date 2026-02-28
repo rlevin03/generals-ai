@@ -16,8 +16,8 @@ import random
 import numpy as np
 from collections import deque
 from typing import List, Tuple, Optional
-from generals_rl_env_gpu import GeneralsEnv
-from generals import GRID_WIDTH, GRID_HEIGHT
+from environment import GeneralsEnv
+from game import GRID_WIDTH, GRID_HEIGHT
 
 
 # Constants

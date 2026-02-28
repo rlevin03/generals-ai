@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 from typing import Tuple
 
-from generals_rl_env_gpu import GeneralsEnv
+from environment import GeneralsEnv
 from greedy_baseline_agent import GreedyAgent, _setup_environment_patches
 from generals_rl_demo import GeneralsRLAgent
 

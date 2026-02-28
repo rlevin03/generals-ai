@@ -23,9 +23,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from generals import CellType
+from game import CellType
 from policy_network import PolicyNetwork
-from generals_rl_env_gpu import GeneralsEnv
+from environment import GeneralsEnv
 from DQN_agent import QNetwork, select_action
 
 

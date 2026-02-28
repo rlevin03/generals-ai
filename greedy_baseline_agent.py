@@ -17,8 +17,8 @@ import io
 import random
 from typing import List, Tuple, Optional, Dict
 
-from generals import CellType, Game
-from generals_rl_env_gpu import GeneralsEnv
+from game import CellType, Game
+from environment import GeneralsEnv
 
 
 # =============================================================================
