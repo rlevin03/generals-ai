@@ -1,0 +1,5 @@
+# Generals RL self-play: run_game + train_self_play
+numpy>=1.21.0,<2
+pygame>=2.1.0
+gym>=0.21.0
+torch>=1.9.0

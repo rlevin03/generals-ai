@@ -35,6 +35,8 @@ GRID_OFFSET_Y = 50
 # Game timing (in seconds)
 TURN_DURATION = 0.5  # Each "turn" is 0.5 seconds like the original
 ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION  # Every 25 "turns" (12.5 seconds)
+# Turn-based (e.g. RL): give +1 to all owned cells every N calls to update()
+ARMY_GENERATION_EVERY_N_TURNS = 20
 
 # Colors
 BLACK = (0, 0, 0)
@@ -111,9 +113,9 @@ class Cell:
         
         # Initialize army count based on cell type
         if cell_type == CellType.CITY:
-            self.army = random.randint(40, 50)
+            self.army = random.randint(80, 120)  # Higher initial city troops
         elif cell_type == CellType.GENERAL:
-            self.army = 1
+            self.army = 10  # Higher starting general
 
 
 class Player:
@@ -152,18 +154,24 @@ class Game:
     - Fog of war and visibility updates
     """
     
-    def __init__(self):
-        """Initialize a new game with default settings."""
+    def __init__(self, turn_based_mode: bool = False):
+        """
+        Initialize a new game with default settings.
+        turn_based_mode: If True, army generation and turn advance on each update() call (for RL).
+        If False, use real-time (TURN_DURATION) for human play.
+        """
         self.grid = [[Cell(x, y) for x in range(GRID_WIDTH)] for y in range(GRID_HEIGHT)]
         self.players = [Player(i, PLAYER_COLORS[i]) for i in range(4)]  # Start with 4 players
         self.game_start_time = time.time()
         self.last_army_generation = time.time()
         self.last_general_tick = time.time()
+        self.turn_based_mode = turn_based_mode
+        self._turn_count = 0  # For turn-based: incremented each update()
         self.selected_cell = None
         self.current_player = 0  # For input handling
         self.game_over = False
         self.winner = -1
-        
+
         # Initialize the game
         self._generate_map()
         self._place_generals()
@@ -191,7 +199,7 @@ class Game:
             y = random.randint(0, GRID_HEIGHT - 1)
             if self.grid[y][x].type == CellType.EMPTY:
                 self.grid[y][x].type = CellType.CITY
-                self.grid[y][x].army = random.randint(40, 50)
+                self.grid[y][x].army = random.randint(80, 120)
     
     def _place_generals(self) -> None:
         """
@@ -225,7 +233,7 @@ class Game:
                 if valid:
                     self.grid[y][x].type = CellType.GENERAL
                     self.grid[y][x].owner = player.id
-                    self.grid[y][x].army = 1
+                    self.grid[y][x].army = 10  # Higher starting general
                     player.general_pos = (x, y)
                     positions.append((x, y))
                     break
@@ -424,20 +432,17 @@ class Game:
     
     def update(self) -> None:
         """
-        Update the game state in real-time.
-        
-        This method handles:
-        - Processing move queues every turn
-        - Army generation from generals and cities
-        - Periodic army generation for all territories
-        - Visibility updates
+        Update the game state in real-time or turn-based.
+
+        Turn-based mode (RL): every call processes moves, adds +1 to general/city,
+        and every ARMY_GENERATION_EVERY_N_TURNS calls adds +1 to all owned cells.
+        Real-time mode: same logic but gated by TURN_DURATION and ARMY_GENERATION_INTERVAL.
         """
         current_time = time.time()
-        
-        # Process move queues for all players every TURN_DURATION
-        if current_time - self.last_general_tick >= TURN_DURATION:
-            self.last_general_tick = current_time
-            
+
+        if self.turn_based_mode:
+            # RL / step-based: every update() is one "turn"
+            self._turn_count += 1
             # Execute one move from each player's queue
             for player in self.players:
                 if not player.is_alive:
@@ -445,8 +450,7 @@ class Game:
                 if player.move_queue:
                     move = player.move_queue.popleft()
                     self.execute_move(move)
-            
-            # Generals and cities generate armies every turn (0.5 seconds)
+            # Generals and cities generate +1 every turn
             for row in self.grid:
                 for cell in row:
                     if cell.owner >= 0:
@@ -454,10 +458,33 @@ class Game:
                             cell.army += 1
                         elif cell.type == CellType.CITY:
                             cell.army += 1
-            
+            # Every N turns: +1 to all owned cells
+            if self._turn_count % ARMY_GENERATION_EVERY_N_TURNS == 0:
+                self._generate_armies()
             self._update_visibility()
-        
-        # Generate armies for all territories every 25 turns (12.5 seconds)
+            return
+
+        # Original real-time logic
+        if current_time - self.last_general_tick >= TURN_DURATION:
+            self.last_general_tick = current_time
+
+            for player in self.players:
+                if not player.is_alive:
+                    continue
+                if player.move_queue:
+                    move = player.move_queue.popleft()
+                    self.execute_move(move)
+
+            for row in self.grid:
+                for cell in row:
+                    if cell.owner >= 0:
+                        if cell.type == CellType.GENERAL:
+                            cell.army += 1
+                        elif cell.type == CellType.CITY:
+                            cell.army += 1
+
+            self._update_visibility()
+
         if current_time - self.last_army_generation >= ARMY_GENERATION_INTERVAL:
             self.last_army_generation = current_time
             self._generate_armies()

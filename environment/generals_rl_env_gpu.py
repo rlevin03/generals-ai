@@ -176,7 +176,7 @@ class GeneralsEnv(gym.Env):
             np.ndarray: Initial observation of shape (height, width, 6)
         """
         # Initialize new game
-        self.game = Game()
+        self.game = Game(turn_based_mode=True)
         self.step_count = 0
         self.episode_reward = 0
         self.current_player_index = 0
@@ -350,17 +350,12 @@ class GeneralsEnv(gym.Env):
     def _calculate_army_to_move(self, army_count: int) -> int:
         """
         Calculate how many armies to move from a cell.
-        
-        Args:
-            army_count: Total armies in the source cell
-            
-        Returns:
-            int: Number of armies to move
+        Uses "leave 1 behind" so agents can move most troops (higher side).
         """
-        if army_count == 1:
-            return 1  # Move the single army
-        else:
-            return max(1, army_count // 2)  # Move half for multiple armies
+        if army_count <= 1:
+            return army_count
+        # Move all but 1 (max flexibility), minimum 1
+        return max(1, army_count - 1)
     
     def _simulate_opponents(self) -> None:
         """

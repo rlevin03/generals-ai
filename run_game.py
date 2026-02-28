@@ -8,13 +8,24 @@ Usage:
   - Pass one env and a list of 4 controllers (one per player).
   - Each controller is bound to the same env; env.current_player_index indicates whose turn.
   - Pass a list of 4 agent callables: agent(controller) -> action_index.
-  - The script runs the loop and returns stored results (winner, steps, per-step info).
+  - The script runs the loop and returns summary (winner, step_count, game_over, per_player_metrics).
 """
 
 import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from environment import GeneralsEnv
+
+
+def _territory_and_army_for_player(game: Any, player_id: int) -> Tuple[int, int]:
+    """Count land (cells) and total troops for a given player from game grid."""
+    territory, army = 0, 0
+    for row in game.grid:
+        for cell in row:
+            if cell.owner == player_id:
+                territory += 1
+                army += cell.army
+    return territory, army
 
 
 def run_game(
@@ -37,11 +48,13 @@ def run_game(
 
     Returns:
         Dict with keys: winner (int or None), step_count (int), done (bool),
-        steps (list of per-step info dicts), game_over (bool).
+        game_over (bool), per_player_metrics (list of dicts). No per-step list (saves memory).
     """
     env.reset()
-    steps: List[Dict[str, Any]] = []
     step_count = 0
+    # Per-player cumulative reward and move count during the game
+    per_player_reward: List[float] = [0.0, 0.0, 0.0, 0.0]
+    per_player_moves: List[int] = [0, 0, 0, 0]
 
     while not env.is_done() and step_count < max_steps:
         current = env.current_player_index
@@ -53,13 +66,14 @@ def run_game(
         next_state, reward, done, info = controller.step(action_idx)
 
         step_count += 1
+        per_player_reward[current] += reward
+        per_player_moves[current] += 1
         step_info = {
             "player": current,
             "reward": reward,
             "done": done,
             **info,
         }
-        steps.append(step_info)
         if on_after_step is not None:
             on_after_step(step_count, current, controller, step_info)
 
@@ -67,12 +81,25 @@ def run_game(
     if env.game.game_over and hasattr(env.game, "winner"):
         winner = env.game.winner
 
+    # Final land (territory), troops (army), and eliminated status per player
+    per_player_metrics: List[Dict[str, Any]] = []
+    for i in range(4):
+        territory, army = _territory_and_army_for_player(env.game, i)
+        is_alive = env.game.players[i].is_alive
+        per_player_metrics.append({
+            "reward": per_player_reward[i],
+            "territory": territory,
+            "army": army,
+            "moves": per_player_moves[i],
+            "eliminated": not is_alive,
+        })
+
     return {
         "winner": winner,
         "step_count": step_count,
         "done": env.is_done(),
         "game_over": env.game.game_over,
-        "steps": steps,
+        "per_player_metrics": per_player_metrics,
     }
 
 
@@ -98,3 +125,9 @@ if __name__ == "__main__":
     print("Winner:", result["winner"])
     print("Steps:", result["step_count"])
     print("Game over:", result["game_over"])
+    m = result.get("per_player_metrics", [])
+    if m:
+        print("Per-player (reward, land, troops, moves, status):")
+        for i, p in enumerate(m):
+            status = "eliminated" if p.get("eliminated", False) else "alive"
+            print(f"  P{i}: reward={p['reward']:.2f} land={p['territory']} troops={p['army']} moves={p['moves']} [{status}]")

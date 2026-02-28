@@ -90,7 +90,7 @@ class QNetwork(nn.Module):
             if x.shape[-1] == self._state_shape[2]:
                 x = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
         x = self.conv(x)
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         x = self.fc(x)
         value = self.value_stream(x)
         advantage = self.advantage_stream(x)

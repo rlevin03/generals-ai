@@ -1,6 +1,7 @@
 """
-Self-play training loop: 4 DQNs vs each other (1v1v1v1), 1000 games,
-training every 40 moves via random sampling from replay buffers.
+Self-play training loop: 1 shared policy (DQN), 4 copies playing each other (1v1v1v1).
+All transitions from all agents go into one dataset; we train the same DQN by random
+sampling from that shared replay buffer. 1000 games, training every 40 moves.
 """
 
 import torch
@@ -8,42 +9,43 @@ from typing import Any, Dict, List
 
 from environment import GeneralsEnv
 from controller import DQNController
-from agents import DQNAgent, DEFAULT_STATE_HWC, DEFAULT_MAX_ACTIONS
+from agents import DQNAgent
 from run_game import run_game
 
 
 TRAIN_EVERY_N_MOVES = 40
-NUM_GAMES = 1000
+NUM_GAMES = 50
 
 
 def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
 
+    # State shape and max_actions must match the env's grid (H, W, C) and H*W*4
+    state_shape = (env.grid_height, env.grid_width, 6)
+    max_actions = env.grid_width * env.grid_height * 4
+
     # One controller per player (all share the same env)
     controllers: List[DQNController] = [DQNController(env, device) for _ in range(4)]
 
-    # Four independent DQN agents (each with own network and replay buffer)
-    agents: List[DQNAgent] = [
-        DQNAgent(
-            device=device,
-            state_shape=DEFAULT_STATE_HWC,
-            max_actions=DEFAULT_MAX_ACTIONS,
-            lr=1e-4,
-            buffer_capacity=100_000,
-            batch_size=64,
-            gamma=0.99,
-            min_buffer_size=1000,
-            target_update_freq=1000,
-            epsilon_start=1.0,
-            epsilon_end=0.1,
-            epsilon_decay=1e-5,
-        )
-        for _ in range(4)
-    ]
+    # Single shared DQN policy and replay buffer for all 4 players (self-play)
+    shared_agent = DQNAgent(
+        device=device,
+        state_shape=state_shape,
+        max_actions=max_actions,
+        lr=1e-4,
+        buffer_capacity=100_000,
+        batch_size=64,
+        gamma=0.99,
+        min_buffer_size=1000,
+        target_update_freq=1000,
+        epsilon_start=1.0,
+        epsilon_end=0.1,
+        epsilon_decay=1e-5,
+    )
 
-    # Callables for run_game: agent i uses agents[i].act(controller)
-    agent_callables: List[Any] = [lambda c, i=j: agents[i].act(c) for j in range(4)]
+    # All 4 players use the same policy
+    agent_callables: List[Any] = [shared_agent.act for _ in range(4)]
 
     def on_after_step(
         step_count: int,
@@ -51,19 +53,21 @@ def main() -> None:
         controller: DQNController,
         step_info: Dict[str, Any],
     ) -> None:
-        # Push last transition to the player who just moved
+        # Store every transition (from any player) in the shared dataset
         trans = controller.get_last_transition()
         if trans is not None:
             state, action, reward, next_state, done = trans
-            agents[player_index].push_transition(
+            shared_agent.push_transition(
                 state, action, reward, next_state, done
             )
-        # Every 40 moves: train all 4 DQNs with random sampling from their buffers
+        # Every 40 moves: one training step on the shared DQN (random sample from shared buffer)
         if step_count > 0 and step_count % TRAIN_EVERY_N_MOVES == 0:
-            for a in agents:
-                a.train_step()
+            shared_agent.train_step()
 
-    print(f"Starting self-play: {NUM_GAMES} games, train every {TRAIN_EVERY_N_MOVES} moves")
+    print(
+        f"Starting self-play: {NUM_GAMES} games, 1 shared policy, "
+        f"train every {TRAIN_EVERY_N_MOVES} moves"
+    )
     wins = [0, 0, 0, 0]
     total_steps = 0
 
@@ -79,15 +83,21 @@ def main() -> None:
         winner = result["winner"]
         if winner is not None and 0 <= winner < 4:
             wins[winner] += 1
-        # Decay epsilon for all agents after each game
-        for a in agents:
-            a.decay_epsilon()
+        shared_agent.decay_epsilon()
 
-        if (game_id + 1) % 50 == 0 or game_id == 0:
+        if (game_id + 1) % 5 == 0 or game_id == 0:
+            m = result.get("per_player_metrics")
             print(
                 f"Game {game_id + 1}/{NUM_GAMES} | Winner: {winner} | "
                 f"Steps: {result['step_count']} | Wins: {wins}"
             )
+            if m:
+                print("  Per-player (reward, land, troops, moves, status):")
+                for i, p in enumerate(m):
+                    status = "eliminated" if p.get("eliminated", False) else "alive"
+                    print(
+                        f"    P{i}: reward={p['reward']:.2f} land={p['territory']} troops={p['army']} moves={p['moves']} [{status}]"
+                    )
 
     print(f"\nDone. Total steps: {total_steps}. Win counts: {wins}")
 
