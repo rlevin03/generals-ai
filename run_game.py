@@ -22,6 +22,7 @@ def run_game(
     controllers: List[Any],
     agents: List[Callable[[Any], int]],
     max_steps: int = 10_000,
+    on_after_step: Optional[Callable[[int, int, Any, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Run one game until done. Each iteration: get current player index, that player's
@@ -32,6 +33,7 @@ def run_game(
         controllers: List of 4 controllers; controllers[i] is used when current_player_index == i.
         agents: List of 4 callables; agents[i](controller) returns action index for player i.
         max_steps: Safety limit on steps.
+        on_after_step: Optional callback(step_count, player_index, controller, step_info) after each step.
 
     Returns:
         Dict with keys: winner (int or None), step_count (int), done (bool),
@@ -51,12 +53,15 @@ def run_game(
         next_state, reward, done, info = controller.step(action_idx)
 
         step_count += 1
-        steps.append({
+        step_info = {
             "player": current,
             "reward": reward,
             "done": done,
             **info,
-        })
+        }
+        steps.append(step_info)
+        if on_after_step is not None:
+            on_after_step(step_count, current, controller, step_info)
 
     winner = getattr(env.game, "winner", None)
     if env.game.game_over and hasattr(env.game, "winner"):

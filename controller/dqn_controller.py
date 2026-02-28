@@ -75,8 +75,12 @@ class DQNController:
         self._valid_explicit = self.env.get_valid_actions_explicit()
 
         explicit_action: Optional[Tuple[int, int, int, int]] = None
-        if self._valid_explicit and 0 <= agent_action_idx < len(self._valid_explicit):
-            explicit_action = self._valid_explicit[agent_action_idx]
+        if self._valid_explicit:
+            if 0 <= agent_action_idx < len(self._valid_explicit):
+                explicit_action = self._valid_explicit[agent_action_idx]
+            else:
+                # Agent must not sit out when moves exist: force first valid move
+                explicit_action = self._valid_explicit[0]
 
         next_state_raw, reward, done, info = self.env.step_explicit(explicit_action)
         next_state_tensor = self._raw_to_tensor(next_state_raw)

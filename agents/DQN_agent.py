@@ -251,6 +251,100 @@ def train_dqn(
             )
 
 
+class DQNAgent:
+    """
+    Single DQN agent for self-play: can act, store transitions, and perform one training step.
+    Used when 4 DQNs play against each other with training every N moves.
+    """
+
+    def __init__(
+        self,
+        device: torch.device,
+        state_shape: Tuple[int, int, int] = DEFAULT_STATE_HWC,
+        max_actions: int = DEFAULT_MAX_ACTIONS,
+        lr: float = 1e-4,
+        buffer_capacity: int = 100_000,
+        batch_size: int = 64,
+        gamma: float = 0.99,
+        min_buffer_size: int = 1000,
+        target_update_freq: int = 1000,
+        epsilon_start: float = 1.0,
+        epsilon_end: float = 0.1,
+        epsilon_decay: float = 1e-5,
+    ):
+        self.device = device
+        self.state_shape = state_shape
+        self.max_actions = max_actions
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.min_buffer_size = min_buffer_size
+        self.target_update_freq = target_update_freq
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+
+        self.online_net = QNetwork(state_shape=state_shape, max_actions=max_actions).to(device)
+        self.target_net = QNetwork(state_shape=state_shape, max_actions=max_actions).to(device)
+        self.target_net.load_state_dict(self.online_net.state_dict())
+        self.optimizer = optim.Adam(self.online_net.parameters(), lr=lr)
+        self.replay = ReplayBuffer(buffer_capacity)
+        self._train_steps = 0
+
+    def act(self, controller: ControllerProtocol) -> int:
+        """Pick a valid action; never sit out when valid actions exist."""
+        state = controller.get_state_for_agent()
+        valid_indices = controller.get_valid_actions_for_agent()
+        return select_action(
+            self.online_net, state, valid_indices, self.epsilon, self.device
+        )
+
+    def push_transition(
+        self,
+        state: torch.Tensor,
+        action: int,
+        reward: float,
+        next_state: torch.Tensor,
+        done: bool,
+    ) -> None:
+        """Append one transition to this agent's replay buffer."""
+        self.replay.push(state, action, reward, next_state, done)
+
+    def train_step(self) -> Optional[float]:
+        """
+        Sample a batch from replay and perform one gradient step.
+        Returns loss if training was performed, else None.
+        """
+        if len(self.replay) < self.min_buffer_size:
+            return None
+        states_b, actions_b, rewards_b, next_states_b, dones_b = self.replay.sample(
+            self.batch_size
+        )
+        states_b = states_b.to(self.device)
+        next_states_b = next_states_b.to(self.device)
+        actions_b = actions_b.to(self.device)
+        rewards_b = rewards_b.to(self.device)
+        dones_b = dones_b.to(self.device)
+        if states_b.shape[-1] == 6:
+            states_b = states_b.permute(0, 3, 1, 2)
+            next_states_b = next_states_b.permute(0, 3, 1, 2)
+        current_q = self.online_net(states_b).gather(1, actions_b.unsqueeze(1)).squeeze(1)
+        with torch.no_grad():
+            next_q = self.target_net(next_states_b).max(1)[0]
+            target_q = rewards_b + self.gamma * next_q * (1 - dones_b)
+        loss = nn.MSELoss()(current_q, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        self._train_steps += 1
+        if self._train_steps % self.target_update_freq == 0:
+            self.target_net.load_state_dict(self.online_net.state_dict())
+        return loss.item()
+
+    def decay_epsilon(self) -> None:
+        """Decay exploration after each game (optional)."""
+        self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_decay)
+
+
 def main() -> None:
     """Run DQN training with the DQN controller and environment."""
     from environment import GeneralsEnv
