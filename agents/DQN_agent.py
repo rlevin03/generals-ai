@@ -1,93 +1,61 @@
 """
-Deep Q-Network (DQN) Agent for Generals Game
+Deep Q-Network (DQN) Agent — game-agnostic, controller-compatible.
 
-This module implements a DQN agent for playing the Generals game using PyTorch.
-The agent uses a convolutional neural network with dueling architecture to learn
-optimal strategies through reinforcement learning.
-
-Most of this code is AI generated.
-
+Consumes state and valid action indices from a controller; outputs an action index.
+No dependency on the game or environment. Compatible with DQNController.
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import random
-import numpy as np
 from collections import deque
-from typing import List, Tuple, Optional
-from environment import GeneralsEnv
-from game import GRID_WIDTH, GRID_HEIGHT
+from typing import List, Tuple, Optional, Any, Protocol
+
+# Default state shape (H, W, C) and max actions for the network (controller uses indices 0..n-1)
+DEFAULT_STATE_HWC = (20, 25, 6)
+DEFAULT_MAX_ACTIONS = 25 * 20 * 4  # max valid actions we ever index into
 
 
-# Constants
-DIRS = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # Up, Down, Left, Right
-PASS_ACTION = None
+class ControllerProtocol(Protocol):
+    """Protocol for a DQN controller: agent only depends on this interface."""
 
+    def reset(self) -> Tuple[torch.Tensor, List[int], Any]:
+        ...
 
-def action_to_coords(action: int) -> Tuple[int, int]:
-    """
-    Convert a flat action index to grid coordinates.
-    
-    Args:
-        action (int): Flat action index
-        
-    Returns:
-        Tuple[int, int]: (x, y) coordinates on the grid
-    """
-    idx = action // 4
-    return idx % GRID_WIDTH, idx // GRID_WIDTH
+    def get_state_for_agent(self) -> torch.Tensor:
+        ...
 
+    def get_valid_actions_for_agent(self) -> List[int]:
+        ...
 
-def get_valid_actions(state_flat: np.ndarray, player_id: int) -> List[int]:
-    """
-    Get all valid actions for the current player based on the game state.
-    
-    Args:
-        state_flat (np.ndarray): Flattened game state
-        player_id (int): ID of the current player
-        
-    Returns:
-        List[int]: List of valid action indices
-    """
-    valid = []
-    state = state_flat.reshape(GRID_HEIGHT, GRID_WIDTH, 4)
-    
-    for y in range(GRID_HEIGHT):
-        for x in range(GRID_WIDTH):
-            owner, army, _, _ = state[y, x]
-            # Check if this cell belongs to the player and has enough army
-            if int(owner) == player_id and army >= 2:
-                # Check all four directions
-                for d, (dx, dy) in enumerate(DIRS):
-                    nx, ny = x + dx, y + dy
-                    # Ensure the target is within grid bounds
-                    if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
-                        valid.append((y * GRID_WIDTH + x) * 4 + d)
-    return valid
+    def step(self, agent_action_idx: int) -> Tuple[torch.Tensor, float, bool, Any]:
+        ...
+
+    def get_last_transition(
+        self,
+    ) -> Optional[Tuple[torch.Tensor, int, float, torch.Tensor, bool]]:
+        ...
 
 
 class QNetwork(nn.Module):
     """
-    Deep Q-Network with dueling architecture for the Generals game.
-    
-    This network uses convolutional layers to process the game state and
-    dueling streams to separate state value and action advantages.
+    Dueling DQN that maps state (B, C, H, W) to Q-values for a fixed maximum number of actions.
+    Game-agnostic: only assumes state shape and max action dimension.
     """
-    
-    def __init__(self, state_dim: int, action_dim: int):
-        """
-        Initialize the Q-Network.
-        
-        Args:
-            state_dim (int): Dimension of the state space
-            action_dim (int): Dimension of the action space
-        """
+
+    def __init__(
+        self,
+        state_shape: Tuple[int, int, int] = DEFAULT_STATE_HWC,
+        max_actions: int = DEFAULT_MAX_ACTIONS,
+    ):
         super(QNetwork, self).__init__()
-        
-        # Convolutional layers for spatial feature extraction
+        h, w, c = state_shape
+        self._state_shape = state_shape
+        self._max_actions = max_actions
+
         self.conv = nn.Sequential(
-            nn.Conv2d(6, 32, kernel_size=3, padding=1),
+            nn.Conv2d(c, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
@@ -95,12 +63,11 @@ class QNetwork(nn.Module):
             nn.ReLU(),
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU()
+            nn.ReLU(),
         )
-        
-        # Fully connected layers for feature processing
+        conv_out_size = 128 * h * w
         self.fc = nn.Sequential(
-            nn.Linear(128 * 20 * 25, 512),  # Match environment dimensions
+            nn.Linear(conv_out_size, 512),
             nn.ReLU(),
             nn.Linear(512, 256),
             nn.ReLU(),
@@ -108,264 +75,193 @@ class QNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(256, 256)
+            nn.Linear(256, 256),
         )
-        
-        # Dueling streams: value and advantage
-        self.value_stream = nn.Linear(256, 1)      # State value
-        self.advantage_stream = nn.Linear(256, action_dim)  # Action advantages
-        
+        self.value_stream = nn.Linear(256, 1)
+        self.advantage_stream = nn.Linear(256, max_actions)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through the network.
-        
-        Args:
-            x (torch.Tensor): Input state tensor
-            
-        Returns:
-            torch.Tensor: Q-values for all actions
+        x: (B, C, H, W). Returns (B, max_actions) Q-values.
         """
-        # Reshape input if needed (from flattened to 2D)
-        if len(x.shape) == 2:
-            x = x.view(-1, 6, 20, 25)  # Match environment dimensions
-        
-        # Convolutional feature extraction
+        if x.dim() == 3:
+            x = x.unsqueeze(0)
+        if x.shape[1] != self._state_shape[2]:  # assume (B, H, W, C) if channel last
+            if x.shape[-1] == self._state_shape[2]:
+                x = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
         x = self.conv(x)
-        x = x.view(x.size(0), -1)  # Flatten
-        
-        # Fully connected feature processing
+        x = x.view(x.size(0), -1)
         x = self.fc(x)
-        
-        # Dueling streams
         value = self.value_stream(x)
         advantage = self.advantage_stream(x)
-        
-        # Combine value and advantage streams
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
-        
         return q_values
 
 
 class ReplayBuffer:
-    """
-    Experience replay buffer for storing and sampling transitions.
-    
-    This buffer stores (state, action, reward, next_state, done) tuples
-    and provides random sampling for training.
-    """
-    
+    """Stores (state, action_idx, reward, next_state, done) for training. Accepts tensors."""
+
     def __init__(self, capacity: int):
-        """
-        Initialize the replay buffer.
-        
-        Args:
-            capacity (int): Maximum number of transitions to store
-        """
-        self.buffer = deque(maxlen=capacity)
+        self.buffer: deque = deque(maxlen=capacity)
 
-    def push(self, state: np.ndarray, action: int, reward: float, 
-             next_state: np.ndarray, done: bool) -> None:
-        """
-        Add a transition to the buffer.
-        
-        Args:
-            state (np.ndarray): Current state
-            action (int): Action taken
-            reward (float): Reward received
-            next_state (np.ndarray): Next state
-            done (bool): Whether episode ended
-        """
-        self.buffer.append((state, action, reward, next_state, done))
+    def push(
+        self,
+        state: torch.Tensor,
+        action: int,
+        reward: float,
+        next_state: torch.Tensor,
+        done: bool,
+    ) -> None:
+        state_cpu = state.detach().cpu() if state.is_cuda else state
+        next_cpu = next_state.detach().cpu() if next_state.is_cuda else next_state
+        self.buffer.append((state_cpu, action, reward, next_cpu, done))
 
-    def sample(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, 
-                                              torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Sample a batch of transitions from the buffer.
-        
-        Args:
-            batch_size (int): Number of transitions to sample
-            
-        Returns:
-            Tuple of tensors: (states, actions, rewards, next_states, dones)
-        """
-        batch = random.sample(self.buffer, batch_size)
+    def sample(
+        self, batch_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
         states, actions, rewards, next_states, dones = zip(*batch)
-        
         return (
-            torch.tensor(states, dtype=torch.float32),
-            torch.tensor(actions, dtype=torch.int64),
-            torch.tensor(rewards, dtype=torch.float32),
-            torch.tensor(next_states, dtype=torch.float32),
-            torch.tensor(dones, dtype=torch.float32),
+            torch.stack(states),
+            torch.tensor(actions, dtype=torch.int64, device=states[0].device),
+            torch.tensor(rewards, dtype=torch.float32, device=states[0].device),
+            torch.stack(next_states),
+            torch.tensor(dones, dtype=torch.float32, device=states[0].device),
         )
 
     def __len__(self) -> int:
-        """Return the current number of transitions in the buffer."""
         return len(self.buffer)
 
 
-def select_action(q_net: QNetwork, state: torch.Tensor, epsilon: float, player_id: int) -> Optional[int]:
+def select_action(
+    q_net: QNetwork,
+    state: torch.Tensor,
+    valid_indices: List[int],
+    epsilon: float,
+    device: torch.device,
+) -> int:
     """
-    Select an action using epsilon-greedy policy.
-    
-    Args:
-        q_net (QNetwork): The Q-network for action selection
-        state (torch.Tensor): Current game state
-        epsilon (float): Exploration rate
-        player_id (int): ID of the current player
-        
-    Returns:
-        Optional[int]: Selected action index, or None if no valid actions
+    Epsilon-greedy action selection over controller-provided valid indices.
+    state: (1, H, W, C) or (1, C, H, W). Returns an index in valid_indices (or 0 if empty).
     """
-    valid_actions = get_valid_actions(state.numpy(), player_id)
-    
-    if not valid_actions:
-        return PASS_ACTION
-
-    # Epsilon-greedy action selection
+    if not valid_indices:
+        return 0
+    if state.dim() == 3:
+        state = state.unsqueeze(0)
+    if state.shape[-1] == 6:
+        state = state.permute(0, 3, 1, 2)
+    state = state.to(device)
+    q_net.eval()
+    with torch.no_grad():
+        q_values = q_net(state).squeeze(0)
+    q_net.train()
     if random.random() < epsilon:
-        # Exploration: random action
-        return random.choice(valid_actions)
-    else:
-        # Exploitation: best action according to Q-network
-        with torch.no_grad():
-            q_values = q_net(state.unsqueeze(0)).squeeze(0)
-            # Mask invalid actions with negative infinity
-            mask = torch.full_like(q_values, float('-inf'))
-            mask[valid_actions] = 0.0
-            q_masked = q_values + mask
-            return int(q_masked.argmax().item())
+        return random.choice(valid_indices)
+    valid_t = torch.tensor(valid_indices, dtype=torch.long, device=q_values.device)
+    q_valid = q_values[valid_t]
+    best_local = q_valid.argmax().item()
+    return valid_indices[best_local]
 
 
-def train_dqn(env: GeneralsEnv, num_episodes: int = 1000, batch_size: int = 64,
-              gamma: float = 0.99, lr: float = 1e-4, buffer_capacity: int = 100000,
-              min_buffer_size: int = 1000, target_update_freq: int = 1000,
-              epsilon_start: float = 1.0, epsilon_end: float = 0.1,
-              epsilon_decay: float = 1e-5) -> None:
+def train_dqn(
+    controller: ControllerProtocol,
+    device: torch.device,
+    num_episodes: int = 1000,
+    batch_size: int = 64,
+    gamma: float = 0.99,
+    lr: float = 1e-4,
+    buffer_capacity: int = 100_000,
+    min_buffer_size: int = 1000,
+    target_update_freq: int = 1000,
+    epsilon_start: float = 1.0,
+    epsilon_end: float = 0.1,
+    epsilon_decay: float = 1e-5,
+    state_shape: Tuple[int, int, int] = DEFAULT_STATE_HWC,
+    max_actions: int = DEFAULT_MAX_ACTIONS,
+) -> None:
     """
-    Train a DQN agent on the Generals environment.
-    
-    Args:
-        env (GeneralsEnv): The game environment
-        num_episodes (int): Number of training episodes
-        batch_size (int): Batch size for training
-        gamma (float): Discount factor for future rewards
-        lr (float): Learning rate for the optimizer
-        buffer_capacity (int): Maximum size of replay buffer
-        min_buffer_size (int): Minimum buffer size before training starts
-        target_update_freq (int): Frequency of target network updates
-        epsilon_start (float): Initial exploration rate
-        epsilon_end (float): Final exploration rate
-        epsilon_decay (float): Rate of epsilon decay
+    Train DQN using a controller. Agent is game-agnostic; controller provides state and valid actions.
     """
-    # Initialize environment and get dimensions
-    initial_state = env.reset()
-    state_dim = len(initial_state)
-    action_dim = env.action_space.n
+    online_net = QNetwork(state_shape=state_shape, max_actions=max_actions).to(device)
+    target_net = QNetwork(state_shape=state_shape, max_actions=max_actions).to(device)
+    target_net.load_state_dict(online_net.state_dict())
+    optimizer = optim.Adam(online_net.parameters(), lr=lr)
+    replay = ReplayBuffer(buffer_capacity)
 
-    # Initialize networks and optimizer
-    online_network = QNetwork(state_dim, action_dim)
-    target_network = QNetwork(state_dim, action_dim)
-    target_network.load_state_dict(online_network.state_dict())
-    optimizer = optim.Adam(online_network.parameters(), lr=lr)
-    replay_buffer = ReplayBuffer(buffer_capacity)
-
-    # Training parameters
     epsilon = epsilon_start
     total_steps = 0
 
-    print(f"Starting DQN training for {num_episodes} episodes...")
-    print(f"State dim: {state_dim}, Action dim: {action_dim}")
+    print(f"Starting DQN training for {num_episodes} episodes (controller-based)...")
+    print(f"State shape: {state_shape}, Max actions: {max_actions}")
 
     for episode in range(num_episodes):
-        # Reset environment for new episode
-        raw_state = env.reset()
-        state = torch.tensor(raw_state, dtype=torch.float32)
-        last_base_reward = env.compute_reward()
-
+        state, valid_indices, info = controller.reset()
+        state = state.to(device)
         episode_reward = 0.0
         step_count = 0
 
         while True:
-            # Select action using epsilon-greedy policy
-            action = select_action(online_network, state, epsilon, env.player_id)
+            action_idx = select_action(
+                online_net, state, valid_indices, epsilon, device
+            )
+            next_state, reward, done, info = controller.step(action_idx)
+            next_state = next_state.to(device)
+            episode_reward += reward
+            step_count += 1
 
-            if action is PASS_ACTION:
-                # No valid actions, pass turn
-                env.game.update()
-                next_raw_state = env.extract_state()
-                done = env.game.game_over
-                base_reward = env.compute_reward()
-                reward = base_reward - last_base_reward
-                last_base_reward = base_reward
-            else:
-                # Execute action
-                from_x, from_y = action_to_coords(action)
-                dx, dy = DIRS[action % 4]
-                to_x, to_y = from_x + dx, from_y + dy
-                
-                print(f"Step {step_count}: Move from ({from_x},{from_y}) → ({to_x},{to_y})")
-                
-                next_raw_state, _, done, _ = env.step(action)
-                base_reward = env.compute_reward()
-                reward = base_reward - last_base_reward
-                last_base_reward = base_reward
-                episode_reward += reward
-                step_count += 1
+            trans = controller.get_last_transition()
+            if trans is not None:
+                s, a, r, s_next, d = trans
+                replay.push(s, a, r, s_next, d)
 
-            next_state = torch.tensor(next_raw_state, dtype=torch.float32)
+            state = next_state
+            valid_indices = controller.get_valid_actions_for_agent()
 
-            # Store transition in replay buffer (only for valid actions)
-            if action is not PASS_ACTION:
-                replay_buffer.push(state.numpy(), action, reward, next_state.numpy(), done)
-
-            state, raw_state = next_state, next_raw_state
-
-            # Train the network if buffer has enough samples
-            if len(replay_buffer) >= min_buffer_size:
-                # Sample batch from replay buffer
-                states_batch, actions_batch, rewards_batch, next_states_batch, dones_batch = \
-                    replay_buffer.sample(batch_size)
-                
-                # Compute current Q-values
-                current_q_values = online_network(states_batch).gather(1, actions_batch.unsqueeze(1)).squeeze(1)
-                
-                # Compute target Q-values
+            if len(replay) >= min_buffer_size:
+                states_b, actions_b, rewards_b, next_states_b, dones_b = replay.sample(
+                    batch_size
+                )
+                states_b = states_b.to(device)
+                next_states_b = next_states_b.to(device)
+                if states_b.shape[-1] == 6:
+                    states_b = states_b.permute(0, 3, 1, 2)
+                    next_states_b = next_states_b.permute(0, 3, 1, 2)
+                current_q = online_net(states_b).gather(1, actions_b.unsqueeze(1)).squeeze(1)
                 with torch.no_grad():
-                    next_q_values = target_network(next_states_batch).max(1)[0]
-                    target_q_values = rewards_batch + gamma * next_q_values * (1 - dones_batch)
-                
-                # Compute loss and update network
-                loss = nn.MSELoss()(current_q_values, target_q_values)
+                    next_q = target_net(next_states_b).max(1)[0]
+                    target_q = rewards_b + gamma * next_q * (1 - dones_b)
+                loss = nn.MSELoss()(current_q, target_q)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                
-                # Update target network periodically
-                if total_steps % target_update_freq == 0:
-                    target_network.load_state_dict(online_network.state_dict())
 
-            # Decay epsilon
+                if total_steps % target_update_freq == 0:
+                    target_net.load_state_dict(online_net.state_dict())
+
             epsilon = max(epsilon_end, epsilon - epsilon_decay)
             total_steps += 1
 
             if done:
                 break
 
-        # Episode summary
         if episode % 100 == 0:
-            print(f"Episode {episode}/{num_episodes}, Reward: {episode_reward:.2f}, "
-                  f"Epsilon: {epsilon:.3f}, Steps: {step_count}")
+            print(
+                f"Episode {episode}/{num_episodes}, Reward: {episode_reward:.2f}, "
+                f"Epsilon: {epsilon:.3f}, Steps: {step_count}"
+            )
 
 
-def main():
-    """Main function to run DQN training."""
-    print("Initializing Generals environment and DQN agent...")
-    env = GeneralsEnv(player_id=0)
-    train_dqn(env)
+def main() -> None:
+    """Run DQN training with the DQN controller and environment."""
+    from environment import GeneralsEnv
+    from controller import DQNController
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    env = GeneralsEnv(player_id=0, num_opponents=1)
+    controller = DQNController(env, device)
+    train_dqn(controller, device, num_episodes=1000)
     print("Training completed!")
 
 
 if __name__ == "__main__":
     main()
-

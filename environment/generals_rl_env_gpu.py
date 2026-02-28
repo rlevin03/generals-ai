@@ -1,13 +1,12 @@
 """
 Generals Game Reinforcement Learning Environment
 
-This module provides a Gym-compatible environment for the Generals game,
-optimized for GPU-based reinforcement learning training. The environment
-implements the standard Gym interface with custom observation and action spaces
-tailored for the Generals game mechanics.
+Agent-agnostic environment: owns the Game, handles reset/step/done.
+Provides the controller with raw state (basic tensor) and masked valid actions
+(explicit moves). Receives explicit actions from the controller and returns
+result (state, reward, done, info).
 
 Most of this code is AI generated.
-
 """
 
 from game import Game, GRID_WIDTH, GRID_HEIGHT, CellType
@@ -99,7 +98,71 @@ class GeneralsEnv(gym.Env):
         
         # Direction vectors for movement
         self.directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # up, down, left, right
-    
+
+    # -------------------------------------------------------------------------
+    # Agent-agnostic API (for controller)
+    # -------------------------------------------------------------------------
+
+    def get_state(self) -> np.ndarray:
+        """Current raw state as a basic tensor (H, W, C). Agent-agnostic."""
+        return self._get_state()
+
+    def get_valid_actions_explicit(self) -> List[Tuple[int, int, int, int]]:
+        """Valid actions as explicit moves: list of (from_x, from_y, to_x, to_y)."""
+        valid = []
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
+                cell = self.game.grid[y][x]
+                if cell.owner != self.player_id or cell.army < 1:
+                    continue
+                for dx, dy in self.directions:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
+                        to_cell = self.game.grid[ny][nx]
+                        if self.player_id not in to_cell.visible_to or to_cell.type != CellType.MOUNTAIN:
+                            valid.append((x, y, nx, ny))
+        return valid
+
+    def step_explicit(
+        self, action: Optional[Tuple[int, int, int, int]]
+    ) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+        """
+        Apply one explicit action from the controller.
+        action: (from_x, from_y, to_x, to_y) or None for no-op.
+        Returns: (state, reward, done, info).
+        """
+        self.step_count += 1
+        if action is not None:
+            from_x, from_y, to_x, to_y = action
+            if not self._is_valid_move(from_x, from_y, to_x, to_y):
+                self.episode_reward += self.invalid_move_penalty
+                return self._get_state(), self.invalid_move_penalty, False, {
+                    "invalid_move": True, "episode_reward": self.episode_reward,
+                    "territory": self._count_territory(), "army": self._count_army(), "step": self.step_count,
+                }
+            cell = self.game.grid[from_y][from_x]
+            army_to_move = self._calculate_army_to_move(cell.army)
+            success = self.game.queue_move(from_x, from_y, to_x, to_y, army_to_move, self.player_id)
+            if not success:
+                self.episode_reward += self.invalid_move_penalty
+                return self._get_state(), self.invalid_move_penalty, False, {
+                    "invalid_move": True, "episode_reward": self.episode_reward,
+                    "territory": self._count_territory(), "army": self._count_army(), "step": self.step_count,
+                }
+        self._simulate_opponents()
+        self.game.update()
+        reward = self._calculate_reward()
+        self.episode_reward += reward
+        done = self._is_done()
+        info = {
+            "turn": self.game.get_turn_number(),
+            "territory": self._count_territory(),
+            "army": self._count_army(),
+            "step": self.step_count,
+            "episode_reward": self.episode_reward,
+        }
+        return self._get_state(), reward, done, info
+
     def reset(self) -> np.ndarray:
         """
         Reset the environment to initial state.
@@ -116,7 +179,7 @@ class GeneralsEnv(gym.Env):
         self.last_territory_count = self._count_territory()
         self.last_army_count = self._count_army()
         
-        return self._get_observation()
+        return self._get_state()
     
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """
@@ -141,7 +204,7 @@ class GeneralsEnv(gym.Env):
         if not self._is_valid_move(from_x, from_y, to_x, to_y):
             reward = self.invalid_move_penalty
             self.episode_reward += reward
-            return self._get_observation(), reward, False, {
+            return self._get_state(), reward, False, {
                 "invalid_move": True,
                 "reason": "Invalid cell selection or movement",
                 "episode_reward": self.episode_reward
@@ -157,7 +220,7 @@ class GeneralsEnv(gym.Env):
         if not success:
             reward = self.invalid_move_penalty
             self.episode_reward += reward
-            return self._get_observation(), reward, False, {
+            return self._get_state(), reward, False, {
                 "invalid_move": True,
                 "reason": "Move queue failed",
                 "episode_reward": self.episode_reward
@@ -183,15 +246,12 @@ class GeneralsEnv(gym.Env):
             "episode_reward": self.episode_reward
         }
         
-        return self._get_observation(), reward, done, info
+        return self._get_state(), reward, done, info
     
-    def _get_observation(self) -> np.ndarray:
+    def _get_state(self) -> np.ndarray:
         """
-        Get the current game state as a multi-channel observation.
-        
-        Returns:
-            np.ndarray: Observation tensor of shape (height, width, 6)
-                Channels: [owner, army, is_city, is_general, is_mountain, is_visible]
+        Get the current game state as a raw multi-channel array (agent-agnostic).
+        Shape (height, width, 6): [owner, army, is_city, is_general, is_mountain, is_visible]
         """
         obs = np.zeros((self.grid_height, self.grid_width, 6), dtype=np.float32)
         
@@ -214,17 +274,7 @@ class GeneralsEnv(gym.Env):
                     obs[y, x, 5] = 0.0  # Not visible
         
         return obs
-    
-    def _get_observation_tensor(self) -> torch.Tensor:
-        """
-        Get observation as a PyTorch tensor on the specified device.
-        
-        Returns:
-            torch.Tensor: Observation tensor on the specified device
-        """
-        obs = self._get_observation()
-        return torch.from_numpy(obs).float().to(self.device)
-    
+
     def _decode_action(self, action: int) -> Tuple[int, int, int, int]:
         """
         Decode action integer to movement coordinates.
@@ -545,7 +595,7 @@ class GeneralsEnv(gym.Env):
         
         # Execute the mapped action
         if action_idx not in self.action_mapping:
-            return self._get_observation(), self.invalid_move_penalty, False, {"invalid_move": True}
+            return self._get_state(), self.invalid_move_penalty, False, {"invalid_move": True}
         
         from_x, from_y, to_x, to_y = self.action_mapping[action_idx]
         

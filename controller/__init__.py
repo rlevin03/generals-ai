@@ -1,5 +1,7 @@
 """
-Controller package: orchestration and control logic (to be discussed).
+Controller package: interface between environment and agents.
 """
 
-# Placeholder for controller classes
+from .dqn_controller import DQNController
+
+__all__ = ["DQNController"]
