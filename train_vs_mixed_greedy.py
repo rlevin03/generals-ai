@@ -1,15 +1,15 @@
 """
-Train the loaded DQN agent (P0) against mixed greedy opponents:
-  P1, P2 = Aggressive Greedy
-  P3 = Normal Greedy
+Train the loaded DQN agent (P0) against 3 Aggressive Greedy opponents (P1, P2, P3).
 
-Loads the original model from checkpoints/dqn_policy_final.pt and continues
-training on top of it. Only P0's transitions are used for training. Saves to
-checkpoints/dqn_policy_vs_greedy_final.pt so the original checkpoint is preserved.
+Loads from checkpoints/dqn_policy_vs_normal_greedy_game_200.pt and continues
+training. Only P0's transitions are used for training. Same spec as train_vs_normal_greedy:
+saves to checkpoints/dqn_policy_vs_aggressive_greedy_final.pt and intermediate
+dqn_policy_vs_aggressive_greedy_game_200.pt etc.
 """
 
 import torch
 import os
+import random
 from typing import Any, Callable, Dict, List
 
 from environment import GeneralsEnv
@@ -17,20 +17,22 @@ from controller import DQNController
 from agents import DQNAgent
 from run_game import run_game
 
-from greedy_baseline_agent import GreedyAgent, AggressiveGreedyAgent, _setup_environment_patches
+from greedy_baseline_agent import AggressiveGreedyAgent, _setup_environment_patches
 
 
-LOAD_CHECKPOINT = os.path.join("checkpoints", "dqn_policy_final.pt")
-SAVE_CHECKPOINT = os.path.join("checkpoints", "dqn_policy_vs_greedy_final.pt")
+LOAD_CHECKPOINT = os.path.join("checkpoints", "dqn_policy_vs_normal_greedy_game_200.pt")
+SAVE_CHECKPOINT = os.path.join("checkpoints", "dqn_policy_vs_aggressive_greedy_final.pt")
 CHECKPOINT_DIR = "checkpoints"
 TRAIN_EVERY_N_MOVES = 40
 NUM_GAMES = 500
 SAVE_EVERY_N_GAMES = 200
 MAX_STEPS_PER_GAME = 10_000
+# Set to an int (e.g. 42) for reproducibility.
+TRAIN_SEED = None
 
 
 def make_greedy_callable(env: GeneralsEnv, agent: Any) -> Callable[[Any], int]:
-    """Return callable(controller) -> action_index for the given greedy agent (Aggressive or normal)."""
+    """Return callable(controller) -> action_index for the given greedy agent (e.g. AggressiveGreedyAgent)."""
     def greedy_act(controller: DQNController) -> int:
         env.player_id = env.current_player_index
         controller.get_valid_actions_for_agent()
@@ -64,6 +66,16 @@ def make_greedy_callable(env: GeneralsEnv, agent: Any) -> Callable[[Any], int]:
 
 
 def main() -> None:
+    if TRAIN_SEED is not None:
+        random.seed(TRAIN_SEED)
+        try:
+            import numpy as np
+            np.random.seed(TRAIN_SEED)
+        except Exception:
+            pass
+        torch.manual_seed(TRAIN_SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(TRAIN_SEED)
     _setup_environment_patches()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
@@ -71,22 +83,19 @@ def main() -> None:
 
     if not os.path.isfile(LOAD_CHECKPOINT):
         raise FileNotFoundError(
-            f"Checkpoint not found: {LOAD_CHECKPOINT}. Run train_self_play.py first."
+            f"Checkpoint not found: {LOAD_CHECKPOINT}. Run train_vs_normal_greedy.py first."
         )
 
-    # Load original agent and continue training (keep exploration for training)
     dqn_agent = DQNAgent.load(LOAD_CHECKPOINT, device)
-    # Optionally set a minimum epsilon for training vs greedy (e.g. 0.05)
     dqn_agent.epsilon = max(dqn_agent.epsilon, 0.05)
 
     controllers: List[DQNController] = [DQNController(env, device) for _ in range(4)]
     aggressive_fn = make_greedy_callable(env, AggressiveGreedyAgent())
-    normal_fn = make_greedy_callable(env, GreedyAgent())
     agents: List[Callable[[Any], int]] = [
         dqn_agent.act,
         aggressive_fn,
         aggressive_fn,
-        normal_fn,
+        aggressive_fn,
     ]
 
     def on_after_step(
@@ -109,7 +118,7 @@ def main() -> None:
             dqn_agent.train_step()
 
     print(
-        f"Training DQN (P0) vs 2× Aggressive Greedy (P1,P2) + 1× Normal Greedy (P3)\n"
+        f"Training DQN (P0) vs 3× Aggressive Greedy (P1,P2,P3)\n"
         f"Loaded from {LOAD_CHECKPOINT}\n"
         f"Save to {SAVE_CHECKPOINT}\n"
         f"Games: {NUM_GAMES}, train every {TRAIN_EVERY_N_MOVES} moves\n"
@@ -133,7 +142,7 @@ def main() -> None:
 
         if (game_id + 1) % SAVE_EVERY_N_GAMES == 0:
             os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-            path = os.path.join(CHECKPOINT_DIR, f"dqn_policy_vs_greedy_game_{game_id + 1}.pt")
+            path = os.path.join(CHECKPOINT_DIR, f"dqn_policy_vs_aggressive_greedy_game_{game_id + 1}.pt")
             dqn_agent.save(path)
             print(f"  Saved to {path}")
 
