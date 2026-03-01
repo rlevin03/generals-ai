@@ -5,6 +5,7 @@ sampling from that shared replay buffer. 1000 games, training every 40 moves.
 """
 
 import torch
+import os
 from typing import Any, Dict, List
 
 from environment import GeneralsEnv
@@ -14,7 +15,9 @@ from run_game import run_game
 
 
 TRAIN_EVERY_N_MOVES = 40
-NUM_GAMES = 50
+NUM_GAMES = 500
+SAVE_EVERY_N_GAMES = 200
+CHECKPOINT_DIR = "checkpoints"
 
 
 def main() -> None:
@@ -57,6 +60,10 @@ def main() -> None:
         trans = controller.get_last_transition()
         if trans is not None:
             state, action, reward, next_state, done = trans
+            # Use full reward for this player (env returns only tile reward; capture/win bonus is in reward_deltas)
+            reward_deltas = step_info.get("reward_deltas")
+            if reward_deltas is not None and player_index in reward_deltas:
+                reward = reward_deltas[player_index]
             shared_agent.push_transition(
                 state, action, reward, next_state, done
             )
@@ -85,7 +92,13 @@ def main() -> None:
             wins[winner] += 1
         shared_agent.decay_epsilon()
 
-        if (game_id + 1) % 5 == 0 or game_id == 0:
+        if (game_id + 1) % SAVE_EVERY_N_GAMES == 0:
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            path = os.path.join(CHECKPOINT_DIR, f"dqn_policy_game_{game_id + 1}.pt")
+            shared_agent.save(path)
+            print(f"  Saved agent to {path}")
+
+        if (game_id + 1) % 10 == 0 or game_id == 0:
             m = result.get("per_player_metrics")
             print(
                 f"Game {game_id + 1}/{NUM_GAMES} | Winner: {winner} | "
@@ -99,7 +112,11 @@ def main() -> None:
                         f"    P{i}: reward={p['reward']:.2f} land={p['territory']} troops={p['army']} moves={p['moves']} [{status}]"
                     )
 
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    final_path = os.path.join(CHECKPOINT_DIR, "dqn_policy_final.pt")
+    shared_agent.save(final_path)
     print(f"\nDone. Total steps: {total_steps}. Win counts: {wins}")
+    print(f"Saved final agent to {final_path}")
 
 
 if __name__ == "__main__":

@@ -273,3 +273,11 @@ The agents use convolutional neural networks with:
 ## 🙏 Acknowledgments
 
 - Original Generals.io game concept(My implementation is a rough copy)
+
+
+## Resolved design notes to learn
+
+- **Why did only one player make moves?** Fixed: the env used `grid_size=(10,10)` but the underlying `Game` used module constants (25×20), so state/valid actions only covered the top-left 10×10. Only the player whose general was in that region had valid moves. The Game now accepts `grid_width`/`grid_height` and the env passes its grid size in `reset()`, so all four players get valid moves every game.
+- **Valid moves** are real actions only: move troops from owned cell to visible, non-mountain neighbor (no pass/idle in the valid list).
+- **Reward** is simplified: small reward per tile captured (neutral or enemy) for the acting player; no kill/win bonuses.
+- **Elimination** is from game logic only (general captured → player dead); reward no longer adds extra terms for kills/wins.

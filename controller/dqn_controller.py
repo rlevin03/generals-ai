@@ -53,9 +53,8 @@ class DQNController:
         return state_tensor, valid_indices, info
 
     def get_state_for_agent(self) -> torch.Tensor:
-        """Current state in DQN format (1, H, W, C) tensor."""
-        if self._state_raw is None:
-            self._state_raw = self.env.get_state()
+        """Current state in DQN format (1, H, W, C) tensor. Always from env for current player (no stale cache)."""
+        self._state_raw = self.env.get_state()
         return self._raw_to_tensor(self._state_raw)
 
     def get_valid_actions_for_agent(self) -> List[int]:

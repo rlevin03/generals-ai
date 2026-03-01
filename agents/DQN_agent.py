@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 from collections import deque
+from pathlib import Path
 from typing import List, Tuple, Optional, Any, Protocol
 
 # Default state shape (H, W, C) and max actions for the network (controller uses indices 0..n-1)
@@ -324,6 +325,10 @@ class DQNAgent:
         actions_b = actions_b.to(self.device)
         rewards_b = rewards_b.to(self.device)
         dones_b = dones_b.to(self.device)
+        # Replay may have stored (1, H, W, C) per sample -> stacked (B, 1, H, W, C)
+        if states_b.dim() == 5:
+            states_b = states_b.squeeze(1)
+            next_states_b = next_states_b.squeeze(1)
         if states_b.shape[-1] == 6:
             states_b = states_b.permute(0, 3, 1, 2)
             next_states_b = next_states_b.permute(0, 3, 1, 2)
@@ -343,6 +348,42 @@ class DQNAgent:
     def decay_epsilon(self) -> None:
         """Decay exploration after each game (optional)."""
         self.epsilon = max(self.epsilon_end, self.epsilon - self.epsilon_decay)
+
+    def save(self, path: str) -> None:
+        """Save policy (online_net) and config for later load. Creates parent dirs if needed."""
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "online_net": self.online_net.state_dict(),
+                "target_net": self.target_net.state_dict(),
+                "state_shape": self.state_shape,
+                "max_actions": self.max_actions,
+                "epsilon": self.epsilon,
+            },
+            path,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        path: str,
+        device: torch.device,
+        lr: float = 1e-4,
+        **kwargs: Any,
+    ) -> "DQNAgent":
+        """Load agent from checkpoint. Other kwargs override buffer/training params."""
+        ckpt = torch.load(path, map_location=device, weights_only=True)
+        agent = cls(
+            device=device,
+            state_shape=tuple(ckpt["state_shape"]),
+            max_actions=int(ckpt["max_actions"]),
+            lr=lr,
+            **kwargs,
+        )
+        agent.online_net.load_state_dict(ckpt["online_net"])
+        agent.target_net.load_state_dict(ckpt["target_net"])
+        agent.epsilon = float(ckpt.get("epsilon", agent.epsilon_end))
+        return agent
 
 
 def main() -> None:

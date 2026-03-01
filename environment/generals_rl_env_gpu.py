@@ -91,10 +91,15 @@ class GeneralsEnv(gym.Env):
         self.invalid_move_penalty = -0.1
         self.step_count = 0
         self.max_steps = 5000
-        self.last_territory_count = 0
-        self.last_army_count = 0
+        self.last_territory_count: List[int] = [0] * 4
+        self.last_army_count: List[int] = [0] * 4
         self.episode_reward = 0
-        
+        # Reward: tile capture (neutral/enemy) + capture bonus so eliminations show in reward
+        self.reward_per_neutral_tile = 0.2
+        self.reward_per_enemy_tile = 1.0
+        self.reward_per_capture = 1000.0  # bonus for capturing a general (eliminating a player)
+        self.reward_win_bonus = 2000.0  # extra bonus for winning the game (last player standing)
+
         # Action mapping for reduced action space
         self.action_mapping = {}
         
@@ -110,7 +115,7 @@ class GeneralsEnv(gym.Env):
         return self._get_state()
 
     def get_valid_actions_explicit(self) -> List[Tuple[int, int, int, int]]:
-        """Valid actions as explicit moves: list of (from_x, from_y, to_x, to_y)."""
+        """Valid actions as explicit moves: list of (from_x, from_y, to_x, to_y). Only includes moves that are guaranteed to execute (visible, non-mountain destination). No pass/idle option."""
         valid = []
         for y in range(self.grid_height):
             for x in range(self.grid_width):
@@ -121,7 +126,9 @@ class GeneralsEnv(gym.Env):
                     nx, ny = x + dx, y + dy
                     if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
                         to_cell = self.game.grid[ny][nx]
-                        if self.current_player_index not in to_cell.visible_to or to_cell.type != CellType.MOUNTAIN:
+                        # Only add if we can see the destination AND it's not a mountain (guaranteed real move)
+                        if (self.current_player_index in to_cell.visible_to and
+                                to_cell.type != CellType.MOUNTAIN):
                             valid.append((x, y, nx, ny))
         return valid
 
@@ -141,6 +148,7 @@ class GeneralsEnv(gym.Env):
                 return self._get_state(), self.invalid_move_penalty, False, {
                     "invalid_move": True, "episode_reward": self.episode_reward,
                     "territory": self._count_territory(), "army": self._count_army(), "step": self.step_count,
+                    "action_taken": True,
                 }
             cell = self.game.grid[from_y][from_x]
             army_to_move = self._calculate_army_to_move(cell.army)
@@ -150,12 +158,29 @@ class GeneralsEnv(gym.Env):
                 return self._get_state(), self.invalid_move_penalty, False, {
                     "invalid_move": True, "episode_reward": self.episode_reward,
                     "territory": self._count_territory(), "army": self._count_army(), "step": self.step_count,
+                    "action_taken": True,
                 }
         # Only current player acts; no opponent simulation. Advance to next player after game update.
+        prev_alive = [self.game.players[i].is_alive for i in range(self.num_players)]
+        prev_owner = [
+            [self.game.grid[y][x].owner for x in range(self.grid_width)]
+            for y in range(self.grid_height)
+        ]
         self.game.update()
+        # Reward: tile captures for acting player; capture bonus for whoever eliminated a player this step
+        tile_reward = self._calculate_reward(prev_alive, prev_owner)
+        reward_deltas: Dict[int, float] = {self.current_player_index: tile_reward}
+        if getattr(self.game, "last_capture", None) is not None:
+            capturing, captured = self.game.last_capture
+            reward_deltas[capturing] = reward_deltas.get(capturing, 0) + self.reward_per_capture
+        # Win bonus: extra reward for the player who won the game
+        winner = getattr(self.game, "winner", None)
+        if self.game.game_over and winner is not None and 0 <= winner < self.num_players:
+            reward_deltas[winner] = reward_deltas.get(winner, 0) + self.reward_win_bonus
+        self.episode_reward += tile_reward
+        if getattr(self.game, "last_capture", None) is not None:
+            self.episode_reward += self.reward_per_capture
         self._advance_current_player()
-        reward = self._calculate_reward()
-        self.episode_reward += reward
         done = self._is_done()
         info = {
             "turn": self.game.get_turn_number(),
@@ -164,9 +189,11 @@ class GeneralsEnv(gym.Env):
             "step": self.step_count,
             "episode_reward": self.episode_reward,
             "current_player_index": self.current_player_index,
-            "winner": getattr(self.game, "winner", None),
+            "winner": winner,
+            "reward_deltas": reward_deltas,
+            "action_taken": action is not None,
         }
-        return self._get_state(), reward, done, info
+        return self._get_state(), tile_reward, done, info
 
     def reset(self) -> np.ndarray:
         """
@@ -175,16 +202,20 @@ class GeneralsEnv(gym.Env):
         Returns:
             np.ndarray: Initial observation of shape (height, width, 6)
         """
-        # Initialize new game
-        self.game = Game(turn_based_mode=True)
+        # Initialize new game (use env grid size so state/valid actions cover full board)
+        self.game = Game(
+            turn_based_mode=True,
+            grid_width=self.grid_width,
+            grid_height=self.grid_height,
+        )
         self.step_count = 0
         self.episode_reward = 0
         self.current_player_index = 0
         
-        # Initialize tracking variables for reward calculation (per current player)
-        self.last_territory_count = self._count_territory()
-        self.last_army_count = self._count_army()
-        
+        # Initialize tracking variables for reward calculation (per-player lists, unused with simple reward)
+        self.last_territory_count = [self._count_territory_for_player(i) for i in range(self.num_players)]
+        self.last_army_count = [self._count_army_for_player(i) for i in range(self.num_players)]
+
         return self._get_state()
     
     def _advance_current_player(self) -> None:
@@ -408,63 +439,47 @@ class GeneralsEnv(gym.Env):
         
         return possible_moves
     
-    def _calculate_reward(self) -> float:
+    def _calculate_reward(
+        self,
+        prev_alive: Optional[List[bool]] = None,
+        prev_owner: Optional[List[List[int]]] = None,
+    ) -> float:
         """
-        Calculate reward based on game state changes.
-        
-        Returns:
-            float: Reward value for the current step
-        """
-        reward = 0.0
-        
-        # Territory expansion reward
-        current_territory = self._count_territory()
-        territory_gain = current_territory - self.last_territory_count
-        reward += territory_gain * 1.0
-        
-        # Army growth reward
-        current_army = self._count_army()
-        army_gain = current_army - self.last_army_count
-        reward += army_gain * 0.01
-        
-        # Strategic position rewards
-        reward += self._calculate_strategic_rewards()
-        
-        # Game completion rewards
-        if self.game.game_over:
-            if self.game.winner == self.current_player_index:
-                reward += 100.0  # Victory bonus
-            else:
-                reward -= 50.0   # Defeat penalty
-        
-        # Efficiency penalty (encourages faster play)
-        reward -= 0.01
-        
-        # Update tracking variables
-        self.last_territory_count = current_territory
-        self.last_army_count = current_army
-        
-        return reward
-    
-    def _calculate_strategic_rewards(self) -> float:
-        """
-        Calculate rewards for strategic achievements.
-        
-        Returns:
-            float: Strategic reward component
+        Tile capture reward for the acting player only (neutral + enemy tiles).
+        Kill and win rewards are attributed in step_explicit via game.last_capture and winner.
         """
         reward = 0.0
-        
-        for y in range(self.grid_height):
-            for x in range(self.grid_width):
-                cell = self.game.grid[y][x]
-                if cell.owner == self.current_player_index:
-                    if cell.type == CellType.CITY:
-                        reward += 0.1  # City ownership bonus
-                    elif cell.type == CellType.GENERAL and (x, y) != self.game.players[self.current_player_index].general_pos:
-                        reward += 50.0  # Enemy general capture bonus
-        
+        acting = self.current_player_index
+        if prev_owner is not None:
+            for y in range(self.grid_height):
+                for x in range(self.grid_width):
+                    cell = self.game.grid[y][x]
+                    if cell.owner != acting:
+                        continue
+                    prev = prev_owner[y][x]
+                    if prev == -1:
+                        reward += self.reward_per_neutral_tile
+                    elif prev != acting:
+                        reward += self.reward_per_enemy_tile
         return reward
+
+    def _count_territory_for_player(self, player_id: int) -> int:
+        """Count cells owned by the given player."""
+        count = 0
+        for row in self.game.grid:
+            for cell in row:
+                if cell.owner == player_id:
+                    count += 1
+        return count
+
+    def _count_army_for_player(self, player_id: int) -> int:
+        """Count total army for the given player."""
+        count = 0
+        for row in self.game.grid:
+            for cell in row:
+                if cell.owner == player_id:
+                    count += cell.army
+        return count
     
     def _count_territory(self) -> int:
         """

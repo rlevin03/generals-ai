@@ -13,7 +13,7 @@ import random
 import time
 import sys
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from collections import deque
 
 # Initialize Pygame
@@ -154,13 +154,16 @@ class Game:
     - Fog of war and visibility updates
     """
     
-    def __init__(self, turn_based_mode: bool = False):
+    def __init__(self, turn_based_mode: bool = False, grid_width: Optional[int] = None, grid_height: Optional[int] = None):
         """
         Initialize a new game with default settings.
         turn_based_mode: If True, army generation and turn advance on each update() call (for RL).
         If False, use real-time (TURN_DURATION) for human play.
+        grid_width, grid_height: If provided, use these for grid size (for RL env); else use GRID_WIDTH, GRID_HEIGHT.
         """
-        self.grid = [[Cell(x, y) for x in range(GRID_WIDTH)] for y in range(GRID_HEIGHT)]
+        self.grid_width = grid_width if grid_width is not None else GRID_WIDTH
+        self.grid_height = grid_height if grid_height is not None else GRID_HEIGHT
+        self.grid = [[Cell(x, y) for x in range(self.grid_width)] for y in range(self.grid_height)]
         self.players = [Player(i, PLAYER_COLORS[i]) for i in range(4)]  # Start with 4 players
         self.game_start_time = time.time()
         self.last_army_generation = time.time()
@@ -171,6 +174,7 @@ class Game:
         self.current_player = 0  # For input handling
         self.game_over = False
         self.winner = -1
+        self.last_capture: Optional[Tuple[int, int]] = None  # (capturing_player, captured_player) after a general capture
 
         # Initialize the game
         self._generate_map()
@@ -187,16 +191,16 @@ class Game:
         # Add mountains (impassable terrain)
         num_mountains = random.randint(15, 25)
         for _ in range(num_mountains):
-            x = random.randint(0, GRID_WIDTH - 1)
-            y = random.randint(0, GRID_HEIGHT - 1)
+            x = random.randint(0, self.grid_width - 1)
+            y = random.randint(0, self.grid_height - 1)
             if self.grid[y][x].type == CellType.EMPTY:
                 self.grid[y][x].type = CellType.MOUNTAIN
         
         # Add cities with initial armies
         num_cities = random.randint(8, 12)
         for _ in range(num_cities):
-            x = random.randint(0, GRID_WIDTH - 1)
-            y = random.randint(0, GRID_HEIGHT - 1)
+            x = random.randint(0, self.grid_width - 1)
+            y = random.randint(0, self.grid_height - 1)
             if self.grid[y][x].type == CellType.EMPTY:
                 self.grid[y][x].type = CellType.CITY
                 self.grid[y][x].army = random.randint(80, 120)
@@ -209,13 +213,13 @@ class Game:
         immediate conflicts and ensure fair starting positions.
         """
         positions = []
-        min_distance = 15  # Minimum Manhattan distance between generals
+        min_distance = max(3, min(15, (self.grid_width + self.grid_height) // 3))  # Scale for small grids
         
         for player in self.players:
             attempts = 0
             while attempts < 100:  # Prevent infinite loop
-                x = random.randint(1, GRID_WIDTH - 2)
-                y = random.randint(1, GRID_HEIGHT - 2)
+                x = random.randint(1, self.grid_width - 2)
+                y = random.randint(1, self.grid_height - 2)
                 
                 # Check if position is valid (empty cell)
                 if self.grid[y][x].type != CellType.EMPTY:
@@ -255,14 +259,14 @@ class Game:
         # Cardinal directions (up, down, left, right)
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             nx, ny = x + dx, y + dy
-            if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
+            if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
                 neighbors.append((nx, ny))
         
         # Diagonal directions for visibility
         if include_diagonals:
             for dx, dy in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
                 nx, ny = x + dx, y + dy
-                if 0 <= nx < GRID_WIDTH and 0 <= ny < GRID_HEIGHT:
+                if 0 <= nx < self.grid_width and 0 <= ny < self.grid_height:
                     neighbors.append((nx, ny))
         
         return neighbors
@@ -280,8 +284,8 @@ class Game:
                 cell.visible_to.clear()
         
         # Add visibility for each player's territories and adjacent cells
-        for y in range(GRID_HEIGHT):
-            for x in range(GRID_WIDTH):
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
                 cell = self.grid[y][x]
                 if cell.owner >= 0:  # Player-owned cell
                     # The cell itself is visible to the owner
@@ -351,34 +355,26 @@ class Game:
         
         # Revalidate the move (army might have changed)
         if from_cell.owner != move.player_id:
-            print(f"Execute failed: Cell ownership changed")
             return False
         if move.army_count > from_cell.army:
             # Adjust army count if it's too high now
             move.army_count = from_cell.army
             if move.army_count <= 0:
-                print(f"Execute failed: No army to move")
                 return False
-        
+
         # Check if we're moving into a mountain (discovered through fog)
         if to_cell.type == CellType.MOUNTAIN:
-            print(f"Execute failed: Discovered mountain at ({to_x},{to_y}) through fog of war")
             return False
-        
-        print(f"Executing move: {move.army_count} from ({from_x},{from_y}) to ({to_x},{to_y})")
-        
+
         # Handle the move
         if to_cell.owner == from_cell.owner:
             # Moving to own territory - just transfer armies
             to_cell.army += move.army_count
             from_cell.army -= move.army_count
-            print(f"Moved to own territory: {to_cell.army} armies now at destination")
         else:
             attacking_army = move.army_count
             defending_army = to_cell.army
-            
-            print(f"Battle: {attacking_army} vs {defending_army}")
-            
+
             if attacking_army > defending_army:
                 # Attack succeeds
                 remaining_army = attacking_army - defending_army
@@ -386,22 +382,15 @@ class Game:
                 to_cell.owner = from_cell.owner
                 to_cell.army = remaining_army
                 from_cell.army -= move.army_count
-                
-                if old_owner == -1:
-                    print(f"Captured neutral territory with {remaining_army} armies")
-                else:
-                    print(f"Attack succeeded: Captured enemy territory with {remaining_army} armies")
-                
+
                 # Check if we captured a general
                 if to_cell.type == CellType.GENERAL:
-                    print(f"GENERAL CAPTURED! Player {old_owner} defeated by Player {from_cell.owner}")
                     self._capture_general(old_owner, from_cell.owner)
             else:
                 # Attack fails
                 to_cell.army -= attacking_army
                 from_cell.army -= move.army_count
-                print(f"Attack failed: Defender has {to_cell.army} armies remaining")
-        
+
         return True
     
     def _capture_general(self, captured_player: int, capturing_player: int) -> None:
@@ -414,7 +403,8 @@ class Game:
         """
         if captured_player < 0 or captured_player >= len(self.players):
             return
-        
+
+        self.last_capture = (capturing_player, captured_player)
         # Mark player as dead
         self.players[captured_player].is_alive = False
         
@@ -442,6 +432,7 @@ class Game:
 
         if self.turn_based_mode:
             # RL / step-based: every update() is one "turn"
+            self.last_capture = None
             self._turn_count += 1
             # Execute one move from each player's queue
             for player in self.players:

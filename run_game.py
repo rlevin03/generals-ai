@@ -66,8 +66,15 @@ def run_game(
         next_state, reward, done, info = controller.step(action_idx)
 
         step_count += 1
-        per_player_reward[current] += reward
-        per_player_moves[current] += 1
+        reward_deltas = info.get("reward_deltas")
+        if reward_deltas is not None:
+            for pid, delta in reward_deltas.items():
+                if 0 <= pid < 4:
+                    per_player_reward[pid] += delta
+        else:
+            per_player_reward[current] += reward
+        if info.get("action_taken", True):
+            per_player_moves[current] += 1
         step_info = {
             "player": current,
             "reward": reward,
@@ -86,12 +93,14 @@ def run_game(
     for i in range(4):
         territory, army = _territory_and_army_for_player(env.game, i)
         is_alive = env.game.players[i].is_alive
+        # Treat 0 land as eliminated (general captured / all territory lost)
+        eliminated = not is_alive or (territory == 0 and army == 0)
         per_player_metrics.append({
             "reward": per_player_reward[i],
             "territory": territory,
             "army": army,
             "moves": per_player_moves[i],
-            "eliminated": not is_alive,
+            "eliminated": eliminated,
         })
 
     return {
