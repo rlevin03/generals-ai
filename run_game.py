@@ -34,6 +34,7 @@ def run_game(
     agents: List[Callable[[Any], int]],
     max_steps: int = 10_000,
     on_after_step: Optional[Callable[[int, int, Any, Dict[str, Any]], None]] = None,
+    on_before_step: Optional[Callable[[int, int, Any], None]] = None,
 ) -> Dict[str, Any]:
     """
     Run one game until done. Each iteration: get current player index, that player's
@@ -45,6 +46,7 @@ def run_game(
         agents: List of 4 callables; agents[i](controller) returns action index for player i.
         max_steps: Safety limit on steps.
         on_after_step: Optional callback(step_count, player_index, controller, step_info) after each step.
+        on_before_step: Optional callback(step_count, player_index, controller) before each step.
 
     Returns:
         Dict with keys: winner (int or None), step_count (int), done (bool),
@@ -60,6 +62,9 @@ def run_game(
         current = env.current_player_index
         controller = controllers[current]
         agent_fn = agents[current]
+
+        if on_before_step is not None:
+            on_before_step(step_count, current, controller)
 
         # Controller provides state/valid actions; agent picks action index
         action_idx = agent_fn(controller)
@@ -102,6 +107,12 @@ def run_game(
             "moves": per_player_moves[i],
             "eliminated": eliminated,
         })
+
+    # If no winner from game (e.g. step limit): winner = single non-eliminated player (same rule as display)
+    if winner is None or winner == -1:
+        not_eliminated = [i for i in range(4) if not per_player_metrics[i]["eliminated"]]
+        if len(not_eliminated) == 1:
+            winner = not_eliminated[0]
 
     return {
         "winner": winner,

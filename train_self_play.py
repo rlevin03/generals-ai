@@ -23,6 +23,7 @@ CHECKPOINT_DIR = "checkpoints"
 def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
+    env.max_steps = 10_000  # env defaults to 5000; match run_game limit
 
     # State shape and max_actions must match the env's grid (H, W, C) and H*W*4
     state_shape = (env.grid_height, env.grid_width, 6)

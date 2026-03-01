@@ -1,8 +1,8 @@
 """
-Run 50 matches: saved DQN agent (dqn_policy_final.pt) vs greedy baseline.
-Players: P0 = DQN, P1/P2/P3 = Aggressive Greedy (from greedy_baseline_agent).
+Run 50 matches: saved DQN agent vs greedy baseline.
+Players: P0 = DQN, P1/P2/P3 = Normal Greedy (from greedy_baseline_agent).
 
-- Uses AggressiveGreedyAgent: prioritizes capturing enemy generals/cities to end games.
+- Uses GreedyAgent: neutral cities, expand, attack weaker (no aggressive general chase).
 - Model: We load from checkpoint and use online_net for P0; weight fingerprint
   is printed to confirm we're not using a fresh/untrained network.
 - Games: A winner requires 3 eliminations (one player left).
@@ -10,6 +10,7 @@ Players: P0 = DQN, P1/P2/P3 = Aggressive Greedy (from greedy_baseline_agent).
 
 import torch
 import os
+import random
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from environment import GeneralsEnv
@@ -17,22 +18,31 @@ from controller import DQNController
 from agents import DQNAgent
 from run_game import run_game
 
-from greedy_baseline_agent import AggressiveGreedyAgent, _setup_environment_patches
+from greedy_baseline_agent import GreedyAgent, _setup_environment_patches
 
 
-CHECKPOINT_PATH = os.path.join("checkpoints", "dqn_policy_final.pt")
+CHECKPOINT_PATH = os.path.join("checkpoints", "dqn_policy_vs_normal_greedy_game_200.pt")
 NUM_MATCHES = 50
-EVAL_ENV_MAX_STEPS = 50_000  # allow games to finish (need 3 eliminations for a winner)
+EVAL_ENV_MAX_STEPS = 20_000  # allow games to finish (need 3 eliminations for a winner)
+# Epsilon: use the checkpoint's epsilon by default (policy as saved; often lower than 0.05 after decay).
+# Set USE_LOADED_EPSILON=False and EVAL_EPSILON=0.05 to match training exploration.
+USE_LOADED_EPSILON = True
+EVAL_EPSILON = 0.05
+# Reproducibility: set to an int (e.g. 42) to fix random seed for same 50 games every run.
+# Use the same seed in train_vs_normal_greedy.py to compare same maps.
+EVAL_SEED: Optional[int] = 42
+# Debug: set > 0 to print state/action for first N steps of match 1 (P0 only) to compare with training.
+DEBUG_FIRST_MATCH_STEPS = 0
 
 
 def make_greedy_agent_callable(env: GeneralsEnv) -> Callable[[Any], int]:
     """
-    Return a callable(controller) -> action_index that uses the aggressive
-    greedy agent (chases wins: capture generals/cities). Baseline action space;
+    Return a callable(controller) -> action_index that uses the normal
+    greedy agent (neutral cities, expand, attack weaker). Baseline action space;
     we set env.player_id = env.current_player_index, then map chosen move to
     controller's valid index.
     """
-    greedy_agent = AggressiveGreedyAgent()
+    greedy_agent = GreedyAgent()
 
     def greedy_act(controller: DQNController) -> int:
         # So baseline's get_reduced_action_space uses the current player
@@ -73,6 +83,17 @@ def make_greedy_agent_callable(env: GeneralsEnv) -> Callable[[Any], int]:
 
 
 def main() -> Dict[str, Any]:
+    if EVAL_SEED is not None:
+        random.seed(EVAL_SEED)
+        try:
+            import numpy as np
+            np.random.seed(EVAL_SEED)
+        except Exception:
+            pass
+        torch.manual_seed(EVAL_SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(EVAL_SEED)
+
     _setup_environment_patches()  # adds get_reduced_action_space to GeneralsEnv
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
@@ -80,11 +101,13 @@ def main() -> Dict[str, Any]:
 
     if not os.path.isfile(CHECKPOINT_PATH):
         raise FileNotFoundError(
-            f"Checkpoint not found: {CHECKPOINT_PATH}. Train first with train_self_play.py"
+            f"Checkpoint not found: {CHECKPOINT_PATH}. Train with train_vs_normal_greedy.py first."
         )
 
     dqn_agent = DQNAgent.load(CHECKPOINT_PATH, device)
-    dqn_agent.epsilon = 0.0  # greedy evaluation (no exploration)
+    if not USE_LOADED_EPSILON:
+        dqn_agent.epsilon = EVAL_EPSILON
+    # else: keep checkpoint epsilon (often lower after decay; true policy strength)
 
     # Verify we're using the loaded model, not a fresh one
     def _weight_fingerprint(net: torch.nn.Module) -> float:
@@ -101,7 +124,7 @@ def main() -> Dict[str, Any]:
     print(
         f"Loaded DQN from {CHECKPOINT_PATH}\n"
         f"  state_shape={dqn_agent.state_shape} max_actions={dqn_agent.max_actions} "
-        f"epsilon={dqn_agent.epsilon}\n"
+        f"epsilon={dqn_agent.epsilon} (eval, use_loaded_epsilon={USE_LOADED_EPSILON})\n"
         f"  (weight fingerprint: {fp:.2f} — if ~0 or tiny, model may be untrained)\n"
     )
 
@@ -119,11 +142,35 @@ def main() -> Dict[str, Any]:
     other = 0  # None winner or draw
     matches: List[Dict[str, Any]] = []
 
-    print(f"Running {NUM_MATCHES} matches: P0 (DQN) vs P1,P2,P3 (Aggressive Greedy)")
+    print(f"Running {NUM_MATCHES} matches: P0 (DQN) vs P1,P2,P3 (Normal Greedy)")
+    if EVAL_SEED is not None:
+        print(f"Seed: {EVAL_SEED} (reproducible). Use same seed in train_vs_normal_greedy.py to compare same maps.")
     print(f"Max steps per game: {EVAL_ENV_MAX_STEPS} (game ends when one player remains)\n")
 
     for game_id in range(NUM_MATCHES):
-        result = run_game(env, controllers, agents, max_steps=EVAL_ENV_MAX_STEPS)
+        def _on_before(step_count: int, current: int, controller: Any) -> None:
+            if game_id != 0 or current != 0 or DEBUG_FIRST_MATCH_STEPS <= 0 or step_count > DEBUG_FIRST_MATCH_STEPS:
+                return
+            state = controller.get_state_for_agent()
+            s = state.detach()
+            print(f"  [DEBUG match 1 step {step_count}] P0 state: shape={tuple(s.shape)} min={s.min().item():.4f} max={s.max().item():.4f} mean={s.float().mean().item():.4f}")
+
+        def _on_after(step_count: int, current: int, controller: Any, step_info: Dict[str, Any]) -> None:
+            if game_id != 0 or current != 0 or DEBUG_FIRST_MATCH_STEPS <= 0 or step_count > DEBUG_FIRST_MATCH_STEPS:
+                return
+            trans = controller.get_last_transition()
+            if trans is not None:
+                _, action_idx, reward, _, done = trans
+                print(f"  [DEBUG match 1 step {step_count}] P0 action_idx={action_idx} reward={reward:.4f} done={done}")
+
+        result = run_game(
+            env,
+            controllers,
+            agents,
+            max_steps=EVAL_ENV_MAX_STEPS,
+            on_after_step=_on_after if DEBUG_FIRST_MATCH_STEPS > 0 else None,
+            on_before_step=_on_before if DEBUG_FIRST_MATCH_STEPS > 0 else None,
+        )
         winner = result["winner"]
         per_player = result.get("per_player_metrics", [])
         matches.append({
@@ -162,7 +209,7 @@ def main() -> Dict[str, Any]:
     }
     print("\n--- Results ---")
     print(f"DQN (P0) wins:    {dqn_wins}/{NUM_MATCHES} ({100 * dqn_wins / NUM_MATCHES:.1f}%)")
-    print(f"Greedy (P1–P3):   {greedy_wins}/{NUM_MATCHES} ({100 * greedy_wins / NUM_MATCHES:.1f}%)  [Aggressive Greedy]")
+    print(f"Greedy (P1–P3):   {greedy_wins}/{NUM_MATCHES} ({100 * greedy_wins / NUM_MATCHES:.1f}%)  [Normal Greedy]")
     if other:
         print(f"Other (no winner): {other}")
     return stats

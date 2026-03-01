@@ -8,6 +8,7 @@ checkpoints/dqn_policy_vs_normal_greedy_final.pt so the original checkpoint is p
 
 import torch
 import os
+import random
 from typing import Any, Callable, Dict, List
 
 from environment import GeneralsEnv
@@ -25,6 +26,8 @@ TRAIN_EVERY_N_MOVES = 40
 NUM_GAMES = 500
 SAVE_EVERY_N_GAMES = 200
 MAX_STEPS_PER_GAME = 10_000
+# Set to an int (e.g. 42) to match run_eval_dqn_vs_greedy EVAL_SEED for same-map comparison.
+TRAIN_SEED = None
 
 
 def make_greedy_callable(env: GeneralsEnv, agent: Any) -> Callable[[Any], int]:
@@ -62,9 +65,20 @@ def make_greedy_callable(env: GeneralsEnv, agent: Any) -> Callable[[Any], int]:
 
 
 def main() -> None:
+    if TRAIN_SEED is not None:
+        random.seed(TRAIN_SEED)
+        try:
+            import numpy as np
+            np.random.seed(TRAIN_SEED)
+        except Exception:
+            pass
+        torch.manual_seed(TRAIN_SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(TRAIN_SEED)
     _setup_environment_patches()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
+    env.max_steps = MAX_STEPS_PER_GAME  # env defaults to 5000; use our limit
 
     if not os.path.isfile(LOAD_CHECKPOINT):
         raise FileNotFoundError(

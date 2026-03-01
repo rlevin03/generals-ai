@@ -67,6 +67,7 @@ def main() -> None:
     _setup_environment_patches()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
+    env.max_steps = MAX_STEPS_PER_GAME  # env defaults to 5000; use our limit
 
     if not os.path.isfile(LOAD_CHECKPOINT):
         raise FileNotFoundError(
