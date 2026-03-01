@@ -219,6 +219,44 @@ class GreedyAgent:
         return score
 
 
+class AggressiveGreedyAgent(GreedyAgent):
+    """
+    Greedy agent that chases the win: prioritizes capturing enemy generals
+    and cities so games actually end. Uses baseline logic plus:
+    - Capture enemy GENERAL (eliminate player): huge bonus
+    - Capture enemy CITY: large bonus
+    - Any winnable attack on enemy: boosted so we prefer fighting over passive expand.
+    Used by run_eval_dqn_vs_greedy.py for evaluation.
+    """
+
+    def _evaluate_move(self, source_cell, target_cell, player_id: int) -> float:
+        score = 0.0
+        is_enemy = target_cell.owner not in (-1, player_id)
+        can_win = source_cell.army > target_cell.army
+
+        # Chase the win: capture enemy general (eliminates that player)
+        if is_enemy and can_win and target_cell.type == CellType.GENERAL:
+            return 50_000.0 + source_cell.army * 0.1
+        # Capture enemy city (high value, weakens opponent)
+        if is_enemy and can_win and target_cell.type == CellType.CITY:
+            score += 5_000.0
+        # Any winnable attack on enemy: prefer over neutrals
+        elif is_enemy and can_win:
+            score += 500.0 + (target_cell.army - source_cell.army)
+        # Rest: baseline priorities (neutral city, neutral tile, then army size)
+        if score == 0.0:
+            if (
+                target_cell.type == CellType.CITY
+                and target_cell.owner == -1
+                and source_cell.army > target_cell.army
+            ):
+                score += 1000.0
+            elif target_cell.owner == -1:
+                score += 100.0
+        score += source_cell.army * 0.1
+        return score
+
+
 # =============================================================================
 # Episode Management
 # =============================================================================
