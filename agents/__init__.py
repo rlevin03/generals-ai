@@ -12,6 +12,7 @@ from .DQN_agent import (
     DEFAULT_STATE_HWC,
     DEFAULT_MAX_ACTIONS,
 )
+from .PPO_agent import PPOAgent, ActorCritic
 
 __all__ = [
     "QNetwork",
@@ -22,4 +23,6 @@ __all__ = [
     "ControllerProtocol",
     "DEFAULT_STATE_HWC",
     "DEFAULT_MAX_ACTIONS",
+    "PPOAgent",
+    "ActorCritic",
 ]
