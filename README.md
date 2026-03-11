@@ -1,6 +1,6 @@
 # Generals.io AI - Reinforcement Learning Project
 
-A Python implementation of the popular Generals.io real-time strategy game with multiple AI agents trained using reinforcement learning techniques.
+A Python implementation of the popular Generals.io real-time strategy game with multiple AI agents trained using reinforcement learning (DQN and PPO).
 
 ## 🎮 About Generals.io
 
@@ -8,24 +8,19 @@ Generals.io is a real-time strategy game where players compete to capture territ
 
 ### Game Features
 
-- **Real-time gameplay** with 0.5-second turns
-- **Fog of war** - players can only see their territory and adjacent cells
-- **Territory control** - captured cells generate armies over time
-- **Cities** - special cells that provide additional army generation
-- **Mountains** - impassable terrain that blocks movement
-- **Multiple players** - support for 1-4 players in a single game
+- **Real-time or turn-based gameplay** (turn-based used for RL training)
+- **Fog of war** – players only see their territory and adjacent cells
+- **Territory control** – captured cells generate armies over time
+- **Cities** – special cells that provide additional army generation
+- **Mountains** – impassable terrain that blocks movement
+- **Multiple players** – 4 players in a single game for self-play training
 
 ### Game Mechanics
 
-- **Army Generation**: Generals and cities generate 1 army per turn (0.5 seconds)
-- **Territory Bonus**: All owned cells generate 1 army every 25 turns (12.5 seconds)
-- **Movement**: Move armies from owned cells to adjacent cells
-- **Combat**: When attacking, armies fight and the stronger force wins
-- **Victory**: Capture the enemy general to win
-
-## 📸 Screenshots & Visualizations
-
-![Game Screenshot](assets/generals_screenshot.png)
+- **Army generation**: Generals and cities generate 1 army per turn; all owned cells generate 1 army every N turns
+- **Movement**: Move armies from owned cells to adjacent cells (4 directions)
+- **Combat**: When attacking, the stronger force wins; ties go to defender
+- **Victory**: Capture the enemy general to eliminate a player; last player standing wins
 
 ## 🚀 Quick Start
 
@@ -38,7 +33,7 @@ pip install torch numpy pygame matplotlib pandas tensorboard gym
 ### Running the Base Game
 
 ```bash
-python generals.py
+python game/generals.py
 ```
 
 **Controls:**
@@ -50,234 +45,142 @@ python generals.py
 - **ESC**: Clear selection
 - **R**: Restart game (when game over)
 
-## 🤖 AI Agents & Training
+## 🤖 Architecture (Post-Refactor)
 
-This project includes several AI agents and training scripts:
+### Environment → Agent Flow (No Controllers in Self-Play)
 
-### 1. DQN Agent Training
+For **self-play DQN** and **self-play PPO**, agents interact **directly with the environment**:
 
-```bash
-# Train a DQN agent from scratch
-python gpu_dqn_training.py
+- **Environment** (`environment/generals_rl_env_gpu.py`):
+  - Owns the `Game` (from `game/generals.py`).
+  - Exposes **state as a PyTorch tensor** `(1, H, W, 6)` via `get_state_tensor(device)`.
+  - Exposes **valid actions as indices** `[0..n-1]` via `get_valid_action_indices()` (indexed over the current list of valid explicit moves).
+  - **`step_by_index(action_index)`**: executes the move for that index and returns `(next_state_tensor, reward, done, info)`. Reward is for the acting player; `info` can include `reward_deltas` for all players.
+  - **`get_last_transition()`**: returns `(state_tensor, action_idx, reward, next_state_tensor, done)` after each step for training.
+  - **`reset(device)`**: with `device` set, returns `(state_tensor, valid_indices, info)`; with `device=None`, returns numpy observation (legacy).
 
-# Train with specific parameters
-python gpu_dqn_training.py --episodes 5000 --batch-size 256 --lr 0.0005
-```
+- **Agents** (`agents/DQN_agent.py`, `agents/PPO_agent.py`):
+  - **`act(env)`**: call `env.get_state_tensor(device)` and `env.get_valid_action_indices()`, then return a single **action index** (integer).
+  - No controller: the env handles indexing of valid moves and conversion to the game’s explicit moves internally.
 
-### 2. DQN Agent Training against Greedy
+- **Run loop** (`run_game.py`):
+  - **`run_game(env, agents, device, max_steps=..., on_after_step=..., on_before_step=...)`**: no controllers. Each step: `action_idx = agents[current](env)`, then `next_state, reward, done, info = env.step_by_index(action_idx)`. Callbacks receive `(step_count, player_index, env, step_info)`; use `env.get_last_transition()` to push transitions to the agent.
 
-```bash
-# Train DQN agent against a greedy algorithm
-python train_reinforce_vs_greedy.py --model_path checkpoints/latest_checkpoint.pth
+### Controllers (Legacy / Vs-Greedy Scripts)
 
-# Custom training parameters
-python train_reinforce_vs_greedy.py \
-    --model_path checkpoints/latest_checkpoint.pth \
-    --episodes 3000 \
-    --lr 0.001 \
-    --gamma 0.99
-```
+Scripts that train or evaluate **vs greedy baselines** still use **controllers**:
 
-### 3. Tournament Evaluation
+- **`run_game_with_controllers(env, controllers, agents, ...)`**: one controller per player; `agents[i](controller)` returns an action index; `controller.step(action_idx)` runs the move and returns the next state tensor, reward, done, info.
+- Used by: `train_vs_normal_greedy.py`, `train_vs_mixed_greedy.py`, `run_eval_dqn_vs_greedy.py`.
 
-````bash
-# Run tournament between DQN and Greedy agents
-python greedy_vs_dqn.py --model checkpoints/latest_checkpoint.pth --games 100
+## 📜 Training Scripts
 
-### 4. AI Agent Demo
+### 1. DQN Self-Play (Env-Only, No Controllers)
 
 ```bash
-# Play against AI with visualization
-python generals_rl_demo.py checkpoints/latest_checkpoint.pth
+# Train one shared DQN with 4 copies playing each other (1v1v1v1)
+python train_self_play.py
+```
 
-# Play without rendering (faster)
-python generals_rl_demo.py checkpoints/latest_checkpoint.pth --no-render
+- Uses `run_game(env, agents, device, ...)`. All transitions go into a shared replay buffer; training every 40 moves.
+- Checkpoints: `checkpoints/dqn_policy_game_*.pt`, `checkpoints/dqn_policy_final.pt`.
+- Set `NUM_PARALLEL_GAMES > 1` in the script to run multiple games in parallel (multiprocessing).
 
-# Play multiple games
-python generals_rl_demo.py checkpoints/latest_checkpoint.pth --games 5
-
-# Analyze agent performance
-python generals_rl_demo.py checkpoints/latest_checkpoint.pth --analyze --games 20
-````
-
-### 5. Greedy Baseline Agent
+### 2. PPO Self-Play (Env-Only, No Controllers)
 
 ```bash
-# Evaluate greedy baseline agent
-python greedy_baseline_agent.py --episodes 200 --grid 25
+# Train one shared PPO policy with 4 copies playing each other
+python train_self_play_ppo.py
 ```
 
-## ⚙️ Configuration & Constants
+- Same env-only flow. Rollout buffer; when it reaches `ROLLOUT_SIZE`, run GAE + PPO update.
+- Checkpoints: `checkpoints/ppo_policy_game_*.pt`, `checkpoints/ppo_policy_final.pt`.
+- Set `NUM_PARALLEL_GAMES > 1` for parallel games.
 
-### Game Constants (`generals.py`)
-
-```python
-# Display settings
-WINDOW_WIDTH = 1000
-WINDOW_HEIGHT = 800
-GRID_WIDTH = 25
-GRID_HEIGHT = 20
-CELL_SIZE = 30
-
-# Game timing
-TURN_DURATION = 0.5  # Each turn is 0.5 seconds
-ARMY_GENERATION_INTERVAL = 25 * TURN_DURATION  # Every 12.5 seconds
-
-# Map generation
-num_mountains = random.randint(15, 25)  # Number of mountains
-num_cities = random.randint(8, 12)      # Number of cities
-min_distance = 15  # Minimum distance between generals
-```
-
-### Training Constants (`gpu_dqn_training.py`)
-
-```python
-# Training hyperparameters
-lr = 5e-4                    # Learning rate
-batch_size = 256            # Batch size for training
-gamma = 0.99                # Discount factor
-epsilon_start = 1.0         # Initial exploration rate
-epsilon_decay = 0.995       # Exploration decay rate
-epsilon_min = 0.05          # Minimum exploration rate
-
-# Environment settings
-num_parallel_envs = 4       # Number of parallel environments
-buffer_capacity = 200000    # Replay buffer size
-update_target_every = 1000  # Target network update frequency
-```
-
-### DQN Constants (`train_reinforce_vs_greedy.py`)
-
-```python
-# Reward shaping constants
-REWARD_CONSTANTS = {
-    'win_bonus': 1000.0,
-    'loss_penalty': -200.0,
-    'city_capture_bonus': 50.0,
-    'enemy_territory_bonus': 10.0,
-    'territory_gain_multiplier': 5.0,
-    'step_penalty': -0.002,
-    'invalid_move_penalty': -0.1,
-    'movement_bonus': 0.005,
-    'frontier_bonus': 0.01,
-    'frontier_growth_bonus': 0.02,
-    'exploration_bonus': 0.005,
-    'enemy_city_spotting_bonus': 1.0
-}
-
-# Training parameters
-DEFAULT_LEARNING_RATE = 0.001
-DEFAULT_EPISODES = 3000
-DEFAULT_GAMMA = 0.99
-DEFAULT_ENTROPY_BETA = 0.01
-DEFAULT_GRADIENT_CLIP = 0.5
-```
-
-## 📊 Training & Evaluation
-
-### Training Progress
-
-Training progress is automatically logged and visualized:
-
-- **TensorBoard logs**: `runs/` directory
-- **Training statistics**: `training_stats/` directory
-- **Model checkpoints**: `checkpoints/` directory
-- **Tournament results**: CSV files with timestamps
-
-### Model File Naming
-
-- **DQN Training**: Creates `checkpoints/checkpoint_ep{episode}.pth` and `checkpoints/latest_checkpoint.pth`
-- **PPO Training**: Creates `runs/policy_ep{episode:05d}.pth` and `runs/final_model.pth`
-- **Demo Script**: Automatically finds `.pth` files in `checkpoints/` directory
-
-### Monitoring Training
+### 3. DQN vs Greedy (Uses Controllers)
 
 ```bash
-# View TensorBoard logs
-tensorboard --logdir runs/
+# Train DQN (P0) vs 3 normal greedy opponents
+python train_vs_normal_greedy.py
 
-# Check training statistics
-ls training_stats/
-cat training_stats/training_summary.json
+# Train DQN (P0) vs 3 aggressive greedy opponents (requires existing checkpoint)
+python train_vs_mixed_greedy.py
 ```
 
-### Performance Metrics
+- Use `run_game_with_controllers`. Controllers translate env state/valid actions and step by index.
 
-- **Win Rate**: Percentage of games won
-- **Average Reward**: Mean episode reward
-- **Territory Control**: Average final territory count
-- **Episode Length**: Average game duration
-- **Invalid Move Rate**: Percentage of invalid actions
+### 4. Evaluation: DQN vs Greedy
 
-## 🏗️ Project Structure
+```bash
+# Run N matches: saved DQN vs greedy baseline
+python run_eval_dqn_vs_greedy.py
+```
+
+- Uses `run_game_with_controllers`; loads checkpoint and reports win rates and metrics.
+
+### 5. Greedy Baseline
+
+```bash
+# Run/evaluate greedy baseline agent
+python greedy_baseline_agent.py
+```
+
+## ⚙️ Configuration
+
+### Game / Env
+
+- **Grid**: e.g. `grid_size=(10, 10)` in `GeneralsEnv` (and passed to `Game`).
+- **Observation**: 6 channels `(owner, army, is_city, is_general, is_mountain, is_visible)`; state shape `(H, W, 6)`.
+- **Valid actions**: list of explicit moves `(from_x, from_y, to_x, to_y)`; agents see them as indices `0..n-1`.
+
+### Training (Self-Play)
+
+- **train_self_play.py**: `TRAIN_EVERY_N_MOVES`, `NUM_GAMES`, `MAX_STEPS_PER_GAME`, `SAVE_EVERY_N_GAMES`, replay buffer size, epsilon decay, etc.
+- **train_self_play_ppo.py**: `ROLLOUT_SIZE`, `TRAIN_EVERY_N_MOVES`, `n_epochs`, `batch_size`, GAE/PPO hyperparameters.
+
+## 📁 Project Structure
 
 ```
-generals-ai/
-├── generals.py
-├── generals_rl_env_gpu.py
-├── gpu_dqn_training.py
-├── train_reinforce_vs_greedy.py
-├── greedy_vs_dqn.py
-├── generals_rl_demo.py
-├── greedy_baseline_agent.py
-├── policy_network.py
-├── DQN_agent.py
-├── assets/
-│   ├── generals_screenshot.png
-│   └── statistics_dqn.png
-├── checkpoints/
-│   ├── checkpoint_ep{episode}.pth
-│   └── latest_checkpoint.pth
-├── runs/
-│   ├── generals_optimized_{timestamp}/
-│   ├── policy_ep{episode:05d}.pth
-│   └── final_model.pth
-├── training_stats/
-│   ├── episode_stats.csv
-│   ├── training_stats.csv
-│   ├── evaluation_stats.csv
-│   ├── training_curves.png
-│   └── training_summary.json
-├── tournament_results_{timestamp}.csv
+├── game/
+│   └── generals.py           # Core game (Cell, Game, Player, turn-based/real-time)
+├── environment/
+│   └── generals_rl_env_gpu.py # RL env: state tensor, indexed actions, step_by_index, get_last_transition
+├── controller/               # Used by vs-greedy scripts only
+│   ├── dqn_controller.py
+│   └── ppo_controller.py
+├── agents/
+│   ├── DQN_agent.py          # DQN: act(env) -> index
+│   └── PPO_agent.py         # PPO: act(env) -> index
+├── run_game.py               # run_game(env, agents, device) and run_game_with_controllers(...)
+├── train_self_play.py        # DQN self-play (env-only)
+├── train_self_play_ppo.py    # PPO self-play (env-only)
+├── train_vs_normal_greedy.py # DQN vs 3× normal greedy (controllers)
+├── train_vs_mixed_greedy.py  # DQN vs 3× aggressive greedy (controllers)
+├── run_eval_dqn_vs_greedy.py # Evaluate DQN vs greedy
+├── greedy_baseline_agent.py  # Greedy baseline + env patches
+├── checkpoints/              # Saved policies
 └── README.md
 ```
 
-### Network Architecture
+### Observation & Action Space
 
-The agents use convolutional neural networks with:
-
-- **Input**: 6-channel observation (owner, army, city, general, mountain, visibility)
-- **Convolutional layers**: 3 layers with batch normalization
-- **Dueling DQN**: Separate value and advantage streams
-- **Output**: Q-values for all possible actions
-
-### Action Space
-
-- **Full action space**: 2000 actions (25×20×4 directions)
-- **Reduced action space**: Only valid moves (dynamically sized)
-- **Movement**: 4 directions (up, down, left, right)
+- **Observation**: PyTorch tensor `(1, H, W, 6)` – owner, normalized army, city/general/mountain/visibility flags (fog of war applied for current player).
+- **Actions**: Integer index in `[0..n-1]` where `n` is the number of valid explicit moves (from owned cell to visible non-mountain neighbor). The env maps index → `(from_x, from_y, to_x, to_y)` and executes the move.
 
 ## 🐛 Troubleshooting
 
-### Common Issues
+- **CUDA out of memory**: Reduce batch size or use `device="cpu"` in env/training.
+- **Slow training**: Use `NUM_PARALLEL_GAMES > 1` in self-play scripts (CPU multiprocessing).
+- **Invalid moves**: Ensure you use the env’s `get_valid_action_indices()` and step with `step_by_index(index)`; the env only allows indices into the current valid list.
+- **Pygame not found**: Install with `pip install pygame` when running the human-playable game (`game/generals.py`).
 
-- **If CUDA out of memory**: Reduce batch size or number of parallel environments
-- **Slow training**: Increase number of parallel environments or use Google Collab
-- **Poor performance**: Adjust reward constants or training hyperparameters
-- **Invalid moves**: Check action space configuration and environment setup
+## Design Notes
 
-## 📈 Results & Benchmarks
+- **Grid size**: The env passes `grid_width`/`grid_height` to `Game` so state and valid actions cover the full board for all four players.
+- **Valid moves**: Only real moves (from owned cell to visible, non-mountain neighbor); no pass/idle in the valid list.
+- **Reward**: Per-step reward for the acting player (e.g. tile capture); `info["reward_deltas"]` can include capture/win bonuses per player.
+- **Elimination**: Handled by game logic (general captured → player dead); reward can add bonuses for kills/wins via `reward_deltas`.
 
-![Statistics](assets/statistics_dqn.png)
+## Acknowledgments
 
-## 🙏 Acknowledgments
-
-- Original Generals.io game concept(My implementation is a rough copy)
-
-
-## Resolved design notes to learn
-
-- **Why did only one player make moves?** Fixed: the env used `grid_size=(10,10)` but the underlying `Game` used module constants (25×20), so state/valid actions only covered the top-left 10×10. Only the player whose general was in that region had valid moves. The Game now accepts `grid_width`/`grid_height` and the env passes its grid size in `reset()`, so all four players get valid moves every game.
-- **Valid moves** are real actions only: move troops from owned cell to visible, non-mountain neighbor (no pass/idle in the valid list).
-- **Reward** is simplified: small reward per tile captured (neutral or enemy) for the acting player; no kill/win bonuses.
-- **Elimination** is from game logic only (general captured → player dead); reward no longer adds extra terms for kills/wins.
+- Original Generals.io game concept (this implementation is a rough copy).
