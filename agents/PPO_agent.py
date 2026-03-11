@@ -27,6 +27,13 @@ class ControllerProtocol(Protocol):
     ) -> Optional[Tuple[torch.Tensor, int, float, torch.Tensor, bool]]: ...
 
 
+class EnvProtocol(Protocol):
+    """Protocol for env when agent interacts directly (no controller)."""
+
+    def get_state_tensor(self, device: Optional[torch.device]) -> torch.Tensor: ...
+    def get_valid_action_indices(self) -> List[int]: ...
+
+
 def _to_chw(x: torch.Tensor, state_shape: Tuple[int, int, int]) -> torch.Tensor:
     """(B, H, W, C) -> (B, C, H, W) if needed."""
     if x.dim() == 3:
@@ -201,10 +208,10 @@ class PPOAgent:
         self._last_log_prob: Optional[float] = None
         self._last_value: Optional[float] = None
 
-    def act(self, controller: ControllerProtocol) -> int:
-        """Sample action from policy over valid indices; store log_prob and value for push_transition."""
-        state = controller.get_state_for_agent()
-        valid_indices = controller.get_valid_actions_for_agent()
+    def act(self, env: EnvProtocol) -> int:
+        """Sample action from policy over valid indices; state and valid from env. Store log_prob and value for push_transition."""
+        state = env.get_state_tensor(self.device)
+        valid_indices = env.get_valid_action_indices()
         if not valid_indices:
             self._last_log_prob = 0.0
             self._last_value = 0.0

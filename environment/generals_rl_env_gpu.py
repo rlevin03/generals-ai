@@ -106,8 +106,52 @@ class GeneralsEnv(gym.Env):
         # Direction vectors for movement
         self.directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]  # up, down, left, right
 
+        # Indexed action space (controller role): valid explicit moves, last transition for training
+        self._valid_explicit: List[Tuple[int, int, int, int]] = []
+        self._last_transition: Optional[Tuple[torch.Tensor, int, float, torch.Tensor, bool]] = None
+        self._device = torch.device(device) if isinstance(device, str) else device
+
     # -------------------------------------------------------------------------
-    # Agent-agnostic API (for controller)
+    # Direct agent API: state as PyTorch tensor, actions as indices 0..n-1
+    # -------------------------------------------------------------------------
+
+    def get_state_tensor(self, device: Optional[torch.device] = None) -> torch.Tensor:
+        """Current board state as PyTorch tensor (1, H, W, 6) on the given device."""
+        d = device if device is not None else self._device
+        raw = self._get_state()
+        t = torch.from_numpy(raw).float().unsqueeze(0).to(d)
+        return t
+
+    def get_valid_action_indices(self) -> List[int]:
+        """Valid actions as indices [0..n-1] into the current explicit move list. Updates internal list."""
+        self._valid_explicit = self.get_valid_actions_explicit()
+        return list(range(len(self._valid_explicit)))
+
+    def step_by_index(
+        self, action_index: int
+    ) -> Tuple[torch.Tensor, float, bool, Dict[str, Any]]:
+        """
+        Execute one step using an action index (0..n-1). Returns (next_state_tensor, reward, done, info).
+        Reward is for the acting player; info includes reward_deltas for all players.
+        """
+        state_tensor_before = self.get_state_tensor(self._device)
+        explicit_action: Optional[Tuple[int, int, int, int]] = None
+        if self._valid_explicit and 0 <= action_index < len(self._valid_explicit):
+            explicit_action = self._valid_explicit[action_index]
+        next_state_raw, reward, done, info = self.step_explicit(explicit_action)
+        next_state_tensor = torch.from_numpy(next_state_raw).float().unsqueeze(0).to(self._device)
+        self._valid_explicit = self.get_valid_actions_explicit()
+        self._last_transition = (state_tensor_before, action_index, reward, next_state_tensor, done)
+        return next_state_tensor, reward, done, info
+
+    def get_last_transition(
+        self,
+    ) -> Optional[Tuple[torch.Tensor, int, float, torch.Tensor, bool]]:
+        """Last (state_tensor, action_idx, reward, next_state_tensor, done) after step_by_index."""
+        return self._last_transition
+
+    # -------------------------------------------------------------------------
+    # Legacy / internal API (for controller-based code paths if any)
     # -------------------------------------------------------------------------
 
     def get_state(self) -> np.ndarray:
@@ -195,12 +239,12 @@ class GeneralsEnv(gym.Env):
         }
         return self._get_state(), tile_reward, done, info
 
-    def reset(self) -> np.ndarray:
+    def reset(self, device: Optional[torch.device] = None):
         """
         Reset the environment to initial state.
-        
-        Returns:
-            np.ndarray: Initial observation of shape (height, width, 6)
+
+        If device is None: returns np.ndarray (legacy).
+        If device is set: returns (state_tensor, valid_action_indices, info) for direct agent use.
         """
         # Initialize new game (use env grid size so state/valid actions cover full board)
         self.game = Game(
@@ -211,11 +255,22 @@ class GeneralsEnv(gym.Env):
         self.step_count = 0
         self.episode_reward = 0
         self.current_player_index = 0
-        
+
         # Initialize tracking variables for reward calculation (per-player lists, unused with simple reward)
         self.last_territory_count = [self._count_territory_for_player(i) for i in range(self.num_players)]
         self.last_army_count = [self._count_army_for_player(i) for i in range(self.num_players)]
 
+        self._valid_explicit = self.get_valid_actions_explicit()
+        self._last_transition = None
+
+        if device is not None:
+            state_tensor = self.get_state_tensor(device)
+            valid_indices = list(range(len(self._valid_explicit)))
+            info = {
+                "territory": self._count_territory(),
+                "army": self._count_army(),
+            }
+            return state_tensor, valid_indices, info
         return self._get_state()
     
     def _advance_current_player(self) -> None:

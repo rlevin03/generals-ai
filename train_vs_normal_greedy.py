@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List
 from environment import GeneralsEnv
 from controller import DQNController
 from agents import DQNAgent
-from run_game import run_game
+from run_game import run_game_with_controllers
 
 from greedy_baseline_agent import GreedyAgent, _setup_environment_patches
 
@@ -125,7 +125,7 @@ def main() -> None:
     total_steps = 0
 
     for game_id in range(NUM_GAMES):
-        result = run_game(
+        result = run_game_with_controllers(
             env,
             controllers,
             agents,

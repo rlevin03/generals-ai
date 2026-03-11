@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from environment import GeneralsEnv
 from controller import DQNController
 from agents import DQNAgent
-from run_game import run_game
+from run_game import run_game_with_controllers
 
 from greedy_baseline_agent import GreedyAgent, _setup_environment_patches
 
@@ -163,7 +163,7 @@ def main() -> Dict[str, Any]:
                 _, action_idx, reward, _, done = trans
                 print(f"  [DEBUG match 1 step {step_count}] P0 action_idx={action_idx} reward={reward:.4f} done={done}")
 
-        result = run_game(
+        result = run_game_with_controllers(
             env,
             controllers,
             agents,

@@ -1,9 +1,8 @@
 """
 Self-play training with PPO: 1 shared policy, 4 copies playing each other (1v1v1v1).
-
-Same structure as train_self_play (DQN): one env, 4 controllers, 4 agent callables
-(shared_agent.act). All transitions go into one rollout buffer; when buffer reaches
-rollout_size we run PPO update (GAE + clipped loss). Uses reward_deltas for full reward.
+Agents interact directly with env (no controllers). All transitions go into one rollout
+buffer; when buffer reaches rollout_size we run PPO update (GAE + clipped loss).
+Uses reward_deltas for full reward.
 
 Option: set NUM_PARALLEL_GAMES > 1 to run that many games in parallel using CPU
 multiprocessing (e.g. 4 = 4 games at once). When 1, runs sequentially as before.
@@ -15,7 +14,6 @@ import multiprocessing
 from typing import Any, Dict, List, Tuple
 
 from environment import GeneralsEnv
-from controller import PPOController
 from agents import PPOAgent
 from run_game import run_game
 
@@ -34,10 +32,9 @@ def _ppo_self_play_worker(
     agent_config: Dict[str, Any],
     game_index: int,
 ) -> Tuple[List[Tuple[Any, int, float, Any, bool, float]], Any, int]:
-    """Run one PPO self-play game in a worker. Returns (transitions, winner, step_count)."""
+    """Run one PPO self-play game in a worker. Returns (transitions, winner, step_count). No controllers."""
     torch.set_num_threads(1)
     from environment import GeneralsEnv
-    from controller import PPOController
     from agents import PPOAgent
     from run_game import run_game
 
@@ -55,17 +52,16 @@ def _ppo_self_play_worker(
     agent = PPOAgent(device=device, **config)
     agent.net.load_state_dict(net_state_dict)
 
-    controllers: List[PPOController] = [PPOController(env, device) for _ in range(4)]
-    agent_callables: List[Any] = [agent.act for _ in range(4)]
+    agents_list: List[Any] = [agent.act for _ in range(4)]
     transitions: List[Tuple[Any, int, float, Any, bool, float]] = []
 
     def on_after_step(
         step_count: int,
         player_index: int,
-        controller: PPOController,
+        env: GeneralsEnv,
         step_info: Dict[str, Any],
     ) -> None:
-        trans = controller.get_last_transition()
+        trans = env.get_last_transition()
         if trans is not None:
             state, action, reward, next_state, done = trans
             reward_deltas = step_info.get("reward_deltas")
@@ -78,8 +74,8 @@ def _ppo_self_play_worker(
 
     result = run_game(
         env,
-        controllers,
-        agent_callables,
+        agents_list,
+        device,
         max_steps=MAX_STEPS_PER_GAME,
         on_after_step=on_after_step,
     )
@@ -123,17 +119,16 @@ def main() -> None:
     total_steps = 0
 
     if NUM_PARALLEL_GAMES <= 1:
-        # Sequential
-        controllers: List[PPOController] = [PPOController(env, device) for _ in range(4)]
+        # Sequential: env-only, no controllers
         agent_callables: List[Any] = [shared_agent.act for _ in range(4)]
 
         def on_after_step(
             step_count: int,
             player_index: int,
-            controller: PPOController,
+            env: GeneralsEnv,
             step_info: Dict[str, Any],
         ) -> None:
-            trans = controller.get_last_transition()
+            trans = env.get_last_transition()
             if trans is not None:
                 state, action, reward, next_state, done = trans
                 reward_deltas = step_info.get("reward_deltas")
@@ -150,13 +145,13 @@ def main() -> None:
 
         print(
             f"Starting PPO self-play: {NUM_GAMES} games, 1 shared policy (sequential), "
-            f"train every {TRAIN_EVERY_N_MOVES} moves, rollout_size={ROLLOUT_SIZE}"
+            f"train every {TRAIN_EVERY_N_MOVES} moves, rollout_size={ROLLOUT_SIZE}, no controllers"
         )
         for game_id in range(NUM_GAMES):
             result = run_game(
                 env,
-                controllers,
                 agent_callables,
+                device,
                 max_steps=MAX_STEPS_PER_GAME,
                 on_after_step=on_after_step,
             )
@@ -185,10 +180,10 @@ def main() -> None:
                             f"    P{i}: reward={p['reward']:.2f} land={p['territory']} troops={p['army']} moves={p['moves']} [{status}]"
                         )
     else:
-        # Parallel
+        # Parallel: env-only, no controllers
         print(
             f"Starting PPO self-play: {NUM_GAMES} games, 1 shared policy, "
-            f"{NUM_PARALLEL_GAMES} parallel games, rollout_size={ROLLOUT_SIZE}"
+            f"{NUM_PARALLEL_GAMES} parallel games, rollout_size={ROLLOUT_SIZE}, no controllers"
         )
         ctx = multiprocessing.get_context("spawn")
         with ctx.Pool(NUM_PARALLEL_GAMES) as pool:

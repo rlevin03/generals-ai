@@ -39,6 +39,16 @@ class ControllerProtocol(Protocol):
         ...
 
 
+class EnvProtocol(Protocol):
+    """Protocol for env when agent interacts directly (no controller)."""
+
+    def get_state_tensor(self, device: Optional[torch.device]) -> torch.Tensor:
+        ...
+
+    def get_valid_action_indices(self) -> List[int]:
+        ...
+
+
 class QNetwork(nn.Module):
     """
     Dueling DQN that maps state (B, C, H, W) to Q-values for a fixed maximum number of actions.
@@ -291,10 +301,10 @@ class DQNAgent:
         self.replay = ReplayBuffer(buffer_capacity)
         self._train_steps = 0
 
-    def act(self, controller: ControllerProtocol) -> int:
-        """Pick a valid action; never sit out when valid actions exist."""
-        state = controller.get_state_for_agent()
-        valid_indices = controller.get_valid_actions_for_agent()
+    def act(self, env: EnvProtocol) -> int:
+        """Pick a valid action from env (state + valid indices). No controller."""
+        state = env.get_state_tensor(self.device)
+        valid_indices = env.get_valid_action_indices()
         return select_action(
             self.online_net, state, valid_indices, self.epsilon, self.device
         )
@@ -387,12 +397,12 @@ class DQNAgent:
 
 
 def main() -> None:
-    """Run DQN training with the DQN controller and environment."""
+    """Run DQN training with the DQN controller and environment (legacy)."""
     from environment import GeneralsEnv
     from controller import DQNController
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    env = GeneralsEnv(player_id=0, num_opponents=1)
+    env = GeneralsEnv(grid_size=(10, 10), training_mode=True, device="cpu")
     controller = DQNController(env, device)
     train_dqn(controller, device, num_episodes=1000)
     print("Training completed!")

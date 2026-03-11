@@ -1,7 +1,7 @@
 """
 Self-play training loop: 1 shared policy (DQN), 4 copies playing each other (1v1v1v1).
-All transitions from all agents go into one dataset; we train the same DQN by random
-sampling from that shared replay buffer. 1000 games, training every 40 moves.
+Agents interact directly with env (no controllers). All transitions go into one replay
+buffer; we train the same DQN by random sampling. 500 games, training every 40 moves.
 
 Option: set NUM_PARALLEL_GAMES > 1 to run that many games in parallel using CPU
 multiprocessing (e.g. 4 = 4 games at once). When 1, runs sequentially as before.
@@ -13,7 +13,6 @@ import multiprocessing
 from typing import Any, Dict, List, Tuple
 
 from environment import GeneralsEnv
-from controller import DQNController
 from agents import DQNAgent
 from run_game import run_game
 
@@ -35,11 +34,10 @@ def _dqn_self_play_worker(
 ) -> Tuple[List[Tuple[Any, int, float, Any, bool]], Any, int]:
     """
     Run one self-play game in a worker process. Returns (transitions, winner, step_count).
-    Transitions use CPU tensors for pickling.
+    No controllers: env provides state tensor and indexed actions; agent(env) -> index.
     """
     torch.set_num_threads(1)
     from environment import GeneralsEnv
-    from controller import DQNController
     from agents import DQNAgent
     from run_game import run_game
 
@@ -60,17 +58,16 @@ def _dqn_self_play_worker(
     agent.target_net.load_state_dict(online_state_dict)
     agent.epsilon = epsilon
 
-    controllers: List[DQNController] = [DQNController(env, device) for _ in range(4)]
     agent_callables: List[Any] = [agent.act for _ in range(4)]
     transitions: List[Tuple[Any, int, float, Any, bool]] = []
 
     def on_after_step(
         step_count: int,
         player_index: int,
-        controller: DQNController,
+        env: GeneralsEnv,
         step_info: Dict[str, Any],
     ) -> None:
-        trans = controller.get_last_transition()
+        trans = env.get_last_transition()
         if trans is not None:
             state, action, reward, next_state, done = trans
             reward_deltas = step_info.get("reward_deltas")
@@ -82,8 +79,8 @@ def _dqn_self_play_worker(
 
     result = run_game(
         env,
-        controllers,
         agent_callables,
+        device,
         max_steps=MAX_STEPS_PER_GAME,
         on_after_step=on_after_step,
     )
@@ -129,40 +126,36 @@ def main() -> None:
     total_steps = 0
 
     if NUM_PARALLEL_GAMES <= 1:
-        # Sequential: original loop
-        controllers: List[DQNController] = [DQNController(env, device) for _ in range(4)]
+        # Sequential: env-only, no controllers
         agent_callables: List[Any] = [shared_agent.act for _ in range(4)]
 
         def on_after_step(
             step_count: int,
             player_index: int,
-            controller: DQNController,
+            env: GeneralsEnv,
             step_info: Dict[str, Any],
         ) -> None:
-            # Store every transition (from any player) in the shared dataset
-            trans = controller.get_last_transition()
+            trans = env.get_last_transition()
             if trans is not None:
                 state, action, reward, next_state, done = trans
-                # Use full reward for this player (env returns only tile reward; capture/win bonus is in reward_deltas)
                 reward_deltas = step_info.get("reward_deltas")
                 if reward_deltas is not None and player_index in reward_deltas:
                     reward = reward_deltas[player_index]
                 shared_agent.push_transition(
                     state, action, reward, next_state, done
                 )
-            # Every 40 moves: one training step on the shared DQN (random sample from shared buffer)
             if step_count > 0 and step_count % TRAIN_EVERY_N_MOVES == 0:
                 shared_agent.train_step()
 
         print(
             f"Starting self-play: {NUM_GAMES} games, 1 shared policy (sequential), "
-            f"train every {TRAIN_EVERY_N_MOVES} moves"
+            f"train every {TRAIN_EVERY_N_MOVES} moves, no controllers"
         )
         for game_id in range(NUM_GAMES):
             result = run_game(
                 env,
-                controllers,
                 agent_callables,
+                device,
                 max_steps=MAX_STEPS_PER_GAME,
                 on_after_step=on_after_step,
             )
@@ -192,10 +185,10 @@ def main() -> None:
                             f"    P{i}: reward={p['reward']:.2f} land={p['territory']} troops={p['army']} moves={p['moves']} [{status}]"
                         )
     else:
-        # Parallel: run NUM_PARALLEL_GAMES at a time via multiprocessing
+        # Parallel: run NUM_PARALLEL_GAMES at a time via multiprocessing (env-only, no controllers)
         print(
             f"Starting self-play: {NUM_GAMES} games, 1 shared policy, "
-            f"{NUM_PARALLEL_GAMES} parallel games, train every {TRAIN_EVERY_N_MOVES} moves"
+            f"{NUM_PARALLEL_GAMES} parallel games, train every {TRAIN_EVERY_N_MOVES} moves, no controllers"
         )
         ctx = multiprocessing.get_context("spawn")
         with ctx.Pool(NUM_PARALLEL_GAMES) as pool:
